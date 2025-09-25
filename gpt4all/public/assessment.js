@@ -7,6 +7,8 @@ class MinimalismAssessment {
         this.totalSteps = 5;
         this.formData = {};
         this.userProfile = null;
+        this.profileSnapshot = null;
+        this.computedProfile = null;
         
         this.init();
     }
@@ -24,9 +26,16 @@ class MinimalismAssessment {
 
     loadExistingProfile() {
         try {
-            const profileData = localStorage.getItem('minimalism_user_profile');
-            if (profileData) {
-                this.userProfile = JSON.parse(profileData);
+            if (window.ProfileStore) {
+                const snapshot = ProfileStore.getSnapshot();
+                this.profileSnapshot = snapshot;
+                this.userProfile = snapshot.profile;
+                this.computedProfile = snapshot.computed;
+            } else {
+                const profileData = localStorage.getItem('minimalism_user_profile');
+                if (profileData) {
+                    this.userProfile = JSON.parse(profileData);
+                }
             }
         } catch (error) {
             console.error('Error loading profile:', error);
@@ -36,6 +45,27 @@ class MinimalismAssessment {
     updateSidebarProfile() {
         const container = document.getElementById('userInfo');
         if (!container) return;
+
+        if (window.ProfileStore) {
+            const snapshot = ProfileStore.renderProfileCard(container, {
+                snapshot: this.profileSnapshot || ProfileStore.getSnapshot(),
+                emptyView: () => `
+                    <div class="user-profile">
+                        <div class="user-profile__avatar">MC</div>
+                        <div class="user-profile__details">
+                            <h3>Let’s get started</h3>
+                            <p>Your answers will shape a focused minimalism roadmap tailored to you.</p>
+                        </div>
+                    </div>
+                `
+            });
+            if (snapshot) {
+                this.profileSnapshot = snapshot;
+                this.userProfile = snapshot.profile;
+                this.computedProfile = snapshot.computed;
+            }
+            return;
+        }
 
         if (this.userProfile) {
             const lifestyle = this.userProfile.lifestyle || 'Lifestyle TBD';
@@ -429,6 +459,11 @@ class MinimalismAssessment {
             // Save to local storage
             localStorage.setItem('minimalism_user_profile', JSON.stringify(profile));
             this.userProfile = profile;
+            if (window.ProfileStore) {
+                this.profileSnapshot = ProfileStore.setProfile(profile);
+                this.userProfile = this.profileSnapshot.profile;
+                this.computedProfile = this.profileSnapshot.computed;
+            }
             this.updateSidebarProfile();
             
             // Send to API for enhanced recommendations
@@ -441,6 +476,11 @@ class MinimalismAssessment {
                 profile.estimatedTimeframe = apiResponse.estimatedTimeframe;
                 localStorage.setItem('minimalism_user_profile', JSON.stringify(profile));
                 this.userProfile = profile;
+                if (window.ProfileStore) {
+                    this.profileSnapshot = ProfileStore.setProfile(profile);
+                    this.userProfile = this.profileSnapshot.profile;
+                    this.computedProfile = this.profileSnapshot.computed;
+                }
                 this.updateSidebarProfile();
             }
             
@@ -449,6 +489,7 @@ class MinimalismAssessment {
             
             // Initialize progress tracking
             this.initializeProgress(profile);
+            this.updateSidebarProfile();
             
             this.showNotification('Assessment completed successfully! Your personalized profile has been created.', 'success');
         } catch (error) {
@@ -623,6 +664,12 @@ class MinimalismAssessment {
         };
 
         localStorage.setItem('minimalism_progress', JSON.stringify(initialProgress));
+        if (window.ProfileStore) {
+            const snapshot = ProfileStore.setProgress(initialProgress);
+            this.profileSnapshot = snapshot;
+            this.userProfile = snapshot.profile;
+            this.computedProfile = snapshot.computed;
+        }
     }
 
     generateUserId() {

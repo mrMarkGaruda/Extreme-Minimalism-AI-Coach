@@ -59,6 +59,7 @@ class EnhancedMinimalismChat {
         this.sendButton = document.getElementById('sendButton');
         this.messagesContainer = document.getElementById('chat-messages');
         this.emptyState = document.getElementById('emptyState');
+    this.emptyStateCloseButton = document.getElementById('emptyStateClose');
         this.typingIndicator = document.getElementById('typingIndicator');
         this.suggestionContainer = document.getElementById('suggestion-container');
         this.suggestionsToggleButton = document.getElementById('suggestions-toggle-button');
@@ -72,11 +73,16 @@ class EnhancedMinimalismChat {
         this.searchBackdrop = document.getElementById('searchPanelBackdrop');
         this.searchInput = document.getElementById('searchInput');
         this.searchResultsList = document.getElementById('searchResults');
+        this.quickMenuToggle = document.getElementById('quickMenuToggle');
+        this.quickMenu = document.getElementById('quickMenu');
+        this.quickMenuCloseButton = document.getElementById('closeQuickMenu');
+        this.quickMenuBackdrop = document.getElementById('quickMenuBackdrop');
         this.clearHistoryButton = document.getElementById('clear-history-button');
         this.emergencyButton = document.getElementById('emergencySupport');
         this.userInfoElement = document.getElementById('userInfo');
         this.celebrationBanner = document.getElementById('milestoneCelebration');
         this.celebrationMessage = document.getElementById('celebrationMessage');
+        this.emptyStateDismissed = false;
     }
 
     init() {
@@ -90,16 +96,18 @@ class EnhancedMinimalismChat {
 
     loadUserData() {
         try {
-            // Load user profile
-            const profileData = localStorage.getItem('minimalism_user_profile');
-            if (profileData) {
-                this.userProfile = JSON.parse(profileData);
-            }
+            if (window.ProfileStore) {
+                this.refreshProfileSnapshot(true);
+            } else {
+                const profileData = localStorage.getItem('minimalism_user_profile');
+                if (profileData) {
+                    this.userProfile = JSON.parse(profileData);
+                }
 
-            // Load progress data
-            const progressData = localStorage.getItem('minimalism_progress');
-            if (progressData) {
-                this.userProgress = JSON.parse(progressData);
+                const progressData = localStorage.getItem('minimalism_progress');
+                if (progressData) {
+                    this.userProgress = JSON.parse(progressData);
+                }
             }
 
             // Load conversation history
@@ -107,9 +115,23 @@ class EnhancedMinimalismChat {
             if (historyData) {
                 this.conversationHistory = JSON.parse(historyData);
             }
+
+            if (Array.isArray(this.conversationHistory) && this.conversationHistory.length > 0) {
+                this.emptyStateDismissed = true;
+            }
         } catch (error) {
             console.error('Error loading user data:', error);
         }
+    }
+
+    refreshProfileSnapshot(force = false) {
+        if (!window.ProfileStore) return null;
+        const snapshot = ProfileStore.getSnapshot({ force });
+        this.profileSnapshot = snapshot;
+        this.userProfile = snapshot.profile;
+        this.userProgress = snapshot.progress;
+        this.profileComputed = snapshot.computed;
+        return snapshot;
     }
 
     setupEventListeners() {
@@ -119,6 +141,10 @@ class EnhancedMinimalismChat {
                 console.log('[Chat] Form submitted');
                 this.sendMessage();
             });
+        }
+
+        if (this.emptyStateCloseButton) {
+            this.emptyStateCloseButton.addEventListener('click', () => this.dismissEmptyState());
         }
 
         if (this.messageInput) {
@@ -189,6 +215,24 @@ class EnhancedMinimalismChat {
             this.searchBackdrop.addEventListener('click', () => this.closeSearchPanel());
         }
 
+        if (this.quickMenuToggle && this.quickMenu) {
+            this.quickMenuToggle.addEventListener('click', () => this.toggleQuickMenu());
+        }
+        if (this.quickMenuCloseButton) {
+            this.quickMenuCloseButton.addEventListener('click', () => this.closeQuickMenu());
+        }
+        if (this.quickMenuBackdrop) {
+            this.quickMenuBackdrop.addEventListener('click', () => this.closeQuickMenu());
+        }
+        if (this.quickMenu) {
+            this.quickMenu.addEventListener('click', (event) => {
+                const closeTrigger = event.target.closest('[data-close-menu]');
+                if (closeTrigger) {
+                    this.closeQuickMenu();
+                }
+            });
+        }
+
         if (this.clearHistoryButton) {
             this.clearHistoryButton.addEventListener('click', () => {
                 const ok = confirm('Clear the entire chat history? This action cannot be undone.');
@@ -199,10 +243,13 @@ class EnhancedMinimalismChat {
                     console.warn('Failed to clear history from storage', e);
                 }
                 this.conversationHistory = [];
-                this.messagesContainer.innerHTML = '';
-                this.addSystemMessage('History cleared. Start fresh with a new message or pick a suggestion.');
-                this.scrollMessagesToBottom(true);
+                if (this.messagesContainer) {
+                    this.messagesContainer.innerHTML = '';
+                }
+                this.resetEmptyState();
                 this.showEmptyState();
+                this.scrollMessagesToBottom(true);
+                this.closeQuickMenu();
             });
         }
 
@@ -229,6 +276,7 @@ class EnhancedMinimalismChat {
 
         if (this.emergencyButton) {
             this.emergencyButton.addEventListener('click', () => {
+                this.closeQuickMenu();
                 this.activateEmergencySupport();
                 this.closeSuggestionPanel();
             });
@@ -257,6 +305,7 @@ class EnhancedMinimalismChat {
                 this.closeSearchPanel();
                 this.closeSuggestionPanel();
                 this.hideModesPanel();
+                this.closeQuickMenu();
             }
         });
 
@@ -283,6 +332,7 @@ class EnhancedMinimalismChat {
 
     openSearchPanel() {
         if (!this.searchPanel) return;
+        this.closeQuickMenu();
         this.searchPanel.setAttribute('aria-hidden', 'false');
         this.searchBackdrop?.removeAttribute('hidden');
         setTimeout(() => this.searchInput?.focus(), 40);
@@ -294,6 +344,33 @@ class EnhancedMinimalismChat {
         this.searchBackdrop?.setAttribute('hidden', '');
     }
 
+    toggleQuickMenu(forceOpen) {
+        if (!this.quickMenu) return;
+        const isOpen = this.quickMenu.getAttribute('aria-hidden') === 'false';
+        const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : !isOpen;
+        if (shouldOpen) {
+            this.openQuickMenu();
+        } else {
+            this.closeQuickMenu();
+        }
+    }
+
+    openQuickMenu() {
+        if (!this.quickMenu) return;
+        this.quickMenu.setAttribute('aria-hidden', 'false');
+        this.quickMenuBackdrop?.removeAttribute('hidden');
+        this.quickMenuToggle?.setAttribute('aria-expanded', 'true');
+        const focusTarget = this.quickMenu.querySelector('.quick-menu__item');
+        focusTarget?.focus();
+    }
+
+    closeQuickMenu() {
+        if (!this.quickMenu) return;
+        this.quickMenu.setAttribute('aria-hidden', 'true');
+        this.quickMenuBackdrop?.setAttribute('hidden', '');
+        this.quickMenuToggle?.setAttribute('aria-expanded', 'false');
+    }
+
     updateAutoScrollState() {
         if (!this.messagesContainer) return;
         const distanceFromBottom = this.messagesContainer.scrollHeight - this.messagesContainer.scrollTop - this.messagesContainer.clientHeight;
@@ -303,15 +380,34 @@ class EnhancedMinimalismChat {
         }
     }
 
-    hideEmptyState() {
-        if (this.emptyState) {
-            this.emptyState.setAttribute('hidden', '');
+    dismissEmptyState(permanent = true) {
+        if (!this.emptyState) return;
+        this.emptyState.setAttribute('hidden', '');
+        this.emptyState.style.display = 'none';
+        if (permanent) {
+            this.emptyStateDismissed = true;
         }
     }
 
+    resetEmptyState() {
+        if (!this.emptyState) return;
+        this.emptyStateDismissed = false;
+        this.emptyState.removeAttribute('hidden');
+        this.emptyState.style.display = '';
+    }
+
+    hideEmptyState() {
+        this.dismissEmptyState(false);
+    }
+
     showEmptyState() {
-        if (this.emptyState && this.messagesContainer?.children.length === 0) {
+        if (!this.emptyState || this.emptyStateDismissed) return;
+        if (this.messagesContainer?.children.length === 0) {
             this.emptyState.removeAttribute('hidden');
+            this.emptyState.style.display = '';
+        } else {
+            this.emptyState.setAttribute('hidden', '');
+            this.emptyState.style.display = 'none';
         }
     }
 
@@ -347,6 +443,18 @@ class EnhancedMinimalismChat {
 
     updateUserInterface() {
         if (!this.userInfoElement) return;
+
+        if (window.ProfileStore) {
+            const snapshot = this.refreshProfileSnapshot();
+            const renderedSnapshot = ProfileStore.renderProfileCard(this.userInfoElement, { snapshot });
+            if (renderedSnapshot) {
+                this.profileSnapshot = renderedSnapshot;
+                this.userProfile = renderedSnapshot.profile;
+                this.userProgress = renderedSnapshot.progress;
+                this.profileComputed = renderedSnapshot.computed;
+            }
+            return;
+        }
 
         if (this.userProfile) {
             const lifestyle = this.userProfile.lifestyle || 'Lifestyle TBD';
@@ -392,24 +500,25 @@ class EnhancedMinimalismChat {
     }
 
     getCurrentItemCount() {
-        if (this.userProgress && this.userProgress.milestones.length > 0) {
-            return this.userProgress.milestones[this.userProgress.milestones.length - 1].itemCount;
+        const metrics = this.profileComputed?.metrics;
+        if (metrics && typeof metrics.currentItems === 'number') {
+            return metrics.currentItems;
         }
-        return this.userProfile?.currentItems || '---';
+        const profileCount = this.userProfile?.currentItems;
+        return typeof profileCount === 'number' ? profileCount : null;
     }
 
     getImprovementPercentage() {
+        if (this.profileComputed && typeof this.profileComputed.improvementPercent === 'number') {
+            return this.profileComputed.improvementPercent;
+        }
         if (!this.userProfile) return 0;
-        
         const startItems = this.userProfile.currentItems;
         const currentItems = this.getCurrentItemCount();
         const targetItems = this.userProfile.targetItems || 50;
-        
-        if (currentItems === '---') return 0;
-        
+        if (currentItems === null) return 0;
         const totalReduction = startItems - targetItems;
         if (!Number.isFinite(totalReduction) || totalReduction <= 0) return 0;
-        if (typeof currentItems !== 'number') return 0;
         const currentReduction = startItems - currentItems;
         const percentage = (currentReduction / totalReduction) * 100;
         return Math.max(0, Math.min(100, Math.round(percentage)));
@@ -458,7 +567,7 @@ class EnhancedMinimalismChat {
         contextDiv.textContent = message;
 
         if (this.messagesContainer) {
-            this.hideEmptyState();
+            this.dismissEmptyState();
             this.messagesContainer.appendChild(contextDiv);
             this.afterMessageAppended();
         }
@@ -477,6 +586,7 @@ class EnhancedMinimalismChat {
         this.toggleSendAvailability();
         
         // Add user message to UI
+    this.dismissEmptyState();
         this.addMessage('User', message, true);
         // Persist immediately so refreshes keep the message
         this.addToHistory('user', message);
@@ -537,7 +647,7 @@ class EnhancedMinimalismChat {
                 return;
             }
 
-            this.hideEmptyState();
+            this.dismissEmptyState();
 
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message ai-message streaming';
@@ -593,8 +703,12 @@ class EnhancedMinimalismChat {
         
         // Add user profile context
         if (this.userProfile) {
+            const currentItems = this.getCurrentItemCount();
+            const targetItems = this.profileComputed?.metrics?.targetItems ?? this.userProfile.targetItems;
+            const currentLabel = window.ProfileStore ? ProfileStore.formatNumber(currentItems) : (currentItems ?? '---');
+            const targetLabel = window.ProfileStore ? ProfileStore.formatNumber(targetItems) : (targetItems ?? '---');
             context += `User Profile: ${this.userProfile.name}, ${this.userProfile.phase} phase, `;
-            context += `${this.getCurrentItemCount()} current items, target: ${this.userProfile.targetItems}. `;
+            context += `${currentLabel} current items, target: ${targetLabel}. `;
             context += `Motivation: ${this.userProfile.motivation}. `;
             
             if (this.userProfile.challenges && this.userProfile.challenges.length > 0) {
@@ -632,7 +746,7 @@ class EnhancedMinimalismChat {
             <div class="message-content">${this.formatMessage(message)}</div>
         `;
         
-        this.hideEmptyState();
+    this.dismissEmptyState();
         this.messagesContainer.appendChild(messageDiv);
         this.afterMessageAppended();
         
@@ -647,7 +761,7 @@ class EnhancedMinimalismChat {
         const messageDiv = document.createElement('div');
         messageDiv.className = 'message system-message';
         messageDiv.textContent = message;
-        this.hideEmptyState();
+        this.dismissEmptyState();
         this.messagesContainer.appendChild(messageDiv);
         this.afterMessageAppended();
     }
@@ -670,7 +784,7 @@ class EnhancedMinimalismChat {
                 <div class="message-content">${messagePart}</div>
             `;
             
-            this.hideEmptyState();
+            this.dismissEmptyState();
             this.messagesContainer.appendChild(messageDiv);
             lastMessage = messageDiv;
         } else {
@@ -733,11 +847,13 @@ class EnhancedMinimalismChat {
 
     loadConversationHistory() {
         if (this.conversationHistory.length === 0) {
+            this.resetEmptyState();
             this.showEmptyState();
             return;
         }
         
         // Load last messages to provide context (show more for continuity)
+        this.dismissEmptyState(true);
         const recentMessages = this.conversationHistory.slice(-20);
         this.isReplayingHistory = true;
         
@@ -905,6 +1021,9 @@ class EnhancedMinimalismChat {
     }
 
     formatTimeframeShort(timeframe) {
+        if (window.ProfileStore) {
+            return ProfileStore.formatTimeframeShort(timeframe);
+        }
         const map = {
             '3-months': '3 mo plan',
             '6-months': '6 mo plan',
@@ -924,6 +1043,7 @@ class EnhancedMinimalismChat {
         if (!this.userProgress) return;
         
         const currentItems = this.getCurrentItemCount();
+        if (currentItems === null) return;
         const startItems = this.userProfile?.currentItems || 1000;
         
         // Check for milestone achievements

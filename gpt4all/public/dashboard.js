@@ -7,6 +7,8 @@ class MinimalismDashboard {
         this.userProgress = null;
         this.goals = [];
         this.decisionHistory = [];
+        this.snapshot = null;
+        this.computedProfile = null;
         
         this.init();
     }
@@ -24,16 +26,18 @@ class MinimalismDashboard {
 
     loadUserData() {
         try {
-            // Load user profile
-            const profileData = localStorage.getItem('minimalism_user_profile');
-            if (profileData) {
-                this.userProfile = JSON.parse(profileData);
-            }
+            if (window.ProfileStore) {
+                this.refreshSnapshot(true);
+            } else {
+                const profileData = localStorage.getItem('minimalism_user_profile');
+                if (profileData) {
+                    this.userProfile = JSON.parse(profileData);
+                }
 
-            // Load progress data
-            const progressData = localStorage.getItem('minimalism_progress');
-            if (progressData) {
-                this.userProgress = JSON.parse(progressData);
+                const progressData = localStorage.getItem('minimalism_progress');
+                if (progressData) {
+                    this.userProgress = JSON.parse(progressData);
+                }
             }
 
             // Load goals
@@ -58,9 +62,31 @@ class MinimalismDashboard {
         }
     }
 
+    refreshSnapshot(force = false) {
+        if (!window.ProfileStore) return null;
+        const snapshot = ProfileStore.getSnapshot({ force });
+        this.snapshot = snapshot;
+        this.userProfile = snapshot.profile;
+        this.userProgress = snapshot.progress;
+        this.computedProfile = snapshot.computed;
+        return snapshot;
+    }
+
     updateSidebarProfile() {
         const container = document.getElementById('userInfo');
         if (!container) return;
+
+        if (window.ProfileStore) {
+            const snapshot = this.refreshSnapshot();
+            const renderedSnapshot = ProfileStore.renderProfileCard(container, { snapshot });
+            if (renderedSnapshot) {
+                this.snapshot = renderedSnapshot;
+                this.userProfile = renderedSnapshot.profile;
+                this.userProgress = renderedSnapshot.progress;
+                this.computedProfile = renderedSnapshot.computed;
+            }
+            return;
+        }
 
         if (this.userProfile) {
             const lifestyle = this.userProfile.lifestyle || 'Lifestyle TBD';
@@ -125,6 +151,9 @@ class MinimalismDashboard {
     }
 
     updateAllVisuals() {
+    if (window.ProfileStore) {
+        this.refreshSnapshot();
+    }
     this.updateSidebarProfile();
     this.updateProgressOverview();
     this.updateMilestones();
@@ -132,25 +161,25 @@ class MinimalismDashboard {
     }
 
     updateProgressOverview() {
-        if (!this.userProfile || !this.userProgress) return;
+        if (!this.userProfile) return;
 
-        const startItems = this.userProfile.currentItems;
-        const currentItems = this.getCurrentItemCount();
-        const targetItems = this.userProfile.targetItems || 50;
+        const progressPercentage = typeof this.computedProfile?.improvementPercent === 'number'
+            ? this.computedProfile.improvementPercent
+            : this.getImprovementPercentage();
 
-        // Calculate progress percentage
-        const totalReduction = startItems - targetItems;
-        const currentReduction = startItems - currentItems;
-        const progressPercentage = Math.min(100, Math.max(0, (currentReduction / totalReduction) * 100));
-
-        // Update progress circle
         this.updateProgressCircle(progressPercentage);
 
         // Update progress text
-        document.getElementById('progressPercentage').textContent = `${Math.round(progressPercentage)}%`;
+        const progressLabel = document.getElementById('progressPercentage');
+        if (progressLabel) {
+            progressLabel.textContent = `${Math.round(progressPercentage)}%`;
+        }
     }
 
     getImprovementPercentage() {
+        if (typeof this.computedProfile?.improvementPercent === 'number') {
+            return this.computedProfile.improvementPercent;
+        }
         if (!this.userProfile) return 0;
         const startItems = this.userProfile.currentItems;
         const currentItems = this.getCurrentItemCount();
@@ -200,10 +229,11 @@ class MinimalismDashboard {
     updateStats() {
         if (!this.userProfile) return;
 
-        const currentItems = this.getCurrentItemCount();
-        const startItems = this.userProfile.currentItems;
-        const targetItems = this.userProfile.targetItems || 50;
-        const itemsReduced = startItems - currentItems;
+        const metrics = this.computedProfile?.metrics || {};
+        const currentItems = typeof metrics.currentItems === 'number' ? metrics.currentItems : this.getCurrentItemCount();
+        const startItems = typeof metrics.startItems === 'number' ? metrics.startItems : this.userProfile.currentItems;
+        const targetItems = typeof metrics.targetItems === 'number' ? metrics.targetItems : (this.userProfile.targetItems || 50);
+        const itemsReduced = startItems && typeof currentItems === 'number' ? startItems - currentItems : 0;
         
         // Calculate days on journey
         const startDate = new Date(this.userProfile.createdAt);
@@ -211,17 +241,28 @@ class MinimalismDashboard {
         const daysOnJourney = Math.floor((today - startDate) / (1000 * 60 * 60 * 24));
 
         // Update stats
-        document.getElementById('currentItems').textContent = currentItems;
-        document.getElementById('itemsReduced').textContent = itemsReduced > 0 ? itemsReduced : '0';
-        document.getElementById('targetItems').textContent = targetItems;
-        document.getElementById('daysOnJourney').textContent = daysOnJourney;
+        const formatNumber = window.ProfileStore ? (value) => ProfileStore.formatNumber(value) : (value) => value;
+
+        const currentItemsElement = document.getElementById('currentItems');
+        const reducedElement = document.getElementById('itemsReduced');
+        const targetElement = document.getElementById('targetItems');
+        const daysElement = document.getElementById('daysOnJourney');
+
+        if (currentItemsElement) currentItemsElement.textContent = formatNumber(currentItems);
+        if (reducedElement) reducedElement.textContent = formatNumber(itemsReduced > 0 ? itemsReduced : 0);
+        if (targetElement) targetElement.textContent = formatNumber(targetItems);
+        if (daysElement) daysElement.textContent = daysOnJourney;
     }
 
     getCurrentItemCount() {
+        const metrics = this.computedProfile?.metrics;
+        if (metrics && typeof metrics.currentItems === 'number') {
+            return metrics.currentItems;
+        }
         if (this.userProgress && this.userProgress.milestones && this.userProgress.milestones.length > 0) {
             return this.userProgress.milestones[this.userProgress.milestones.length - 1].itemCount;
         }
-        return this.userProfile?.currentItems || 0;
+        return typeof this.userProfile?.currentItems === 'number' ? this.userProfile.currentItems : 0;
     }
 
     getAvatarInitials() {
@@ -234,6 +275,9 @@ class MinimalismDashboard {
     }
 
     formatTimeframeShort(timeframe) {
+        if (window.ProfileStore) {
+            return ProfileStore.formatTimeframeShort(timeframe);
+        }
         const map = {
             '3-months': '3 mo plan',
             '6-months': '6 mo plan',
@@ -390,6 +434,10 @@ class MinimalismDashboard {
 
         // Save locally
         localStorage.setItem('minimalism_progress', JSON.stringify(this.userProgress));
+        if (window.ProfileStore) {
+            ProfileStore.setProgress(this.userProgress);
+            this.refreshSnapshot(true);
+        }
 
         // Send to API
         try {

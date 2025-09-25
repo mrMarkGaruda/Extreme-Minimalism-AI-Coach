@@ -37,25 +37,22 @@
                         <span>Coach online</span>
                     </div>
                 </div>
-                <div class="chat-topbar__actions">
-                    <button id="suggestions-toggle-button" type="button" class="chip-button" aria-expanded="false" aria-controls="suggestion-container">Suggested prompts</button>
-                    <button id="modeToggle" type="button" class="chip-button" aria-expanded="false" aria-controls="chatModes">Focus modes</button>
-                    <button id="searchToggle" type="button" class="icon-button" aria-controls="searchPanel">Search</button>
-                    <button id="clear-history-button" type="button" class="icon-button">Clear</button>
-                    <button id="emergencySupport" type="button" class="danger-button">Emergency support</button>
-                </div>
+                <button id="quickMenuToggle" type="button" class="icon-button icon-button--ghost" aria-expanded="false" aria-controls="quickMenu">
+                    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M5 5h4v4H5V5zm10 0h4v4h-4V5zM5 15h4v4H5v-4zm10 0h4v4h-4v-4z" fill="currentColor"/>
+                    </svg>
+                    <span class="sr-only">Open chat tools</span>
+                </button>
             </header>
-
-            <section id="chatModes" class="chat-modes" aria-label="Focus modes" hidden>
-                <button type="button" class="mode-pill mode-btn active" data-mode="general" aria-pressed="true">General</button>
-                <button type="button" class="mode-pill mode-btn" data-mode="assessment" aria-pressed="false">Assessment</button>
-                <button type="button" class="mode-pill mode-btn" data-mode="decision" aria-pressed="false">Decision support</button>
-                <button type="button" class="mode-pill mode-btn" data-mode="emergency" aria-pressed="false">Emergency calm</button>
-            </section>
 
             <section class="chat-main" aria-label="Conversation">
                 <div id="chat-area" class="chat-stream">
                     <div id="emptyState" class="empty-state" role="presentation">
+                        <button id="emptyStateClose" type="button" class="empty-state__close" aria-label="Hide starter tips">
+                            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                                <path d="M4 4l8 8M12 4L4 12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                            </svg>
+                        </button>
                         <h2>Start a conversation</h2>
                         <p>Share where you are in your minimalism journey or ask for your next focused action.</p>
                         <ul>
@@ -107,6 +104,79 @@
     </aside>
     <div id="searchPanelBackdrop" class="search-backdrop" hidden></div>
 
+    <aside id="quickMenu" class="quick-menu" aria-hidden="true">
+        <div class="quick-menu__inner">
+            <header class="quick-menu__header">
+                <h2>Chat tools</h2>
+                <button id="closeQuickMenu" type="button" class="icon-button icon-button--ghost">
+                    <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                        <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    <span class="sr-only">Close chat tools</span>
+                </button>
+            </header>
+            <div class="quick-menu__body">
+                <nav class="quick-menu__grid" aria-label="Chat quick actions">
+                    <button id="suggestions-toggle-button" type="button" class="quick-menu__item" aria-expanded="false" aria-controls="suggestion-container" data-close-menu="true">
+                        <span class="quick-menu__icon" aria-hidden="true">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                                <path d="M12 2l1.6 4.6H18l-3.9 2.9 1.4 4.5L12 11.8 8.5 14l1.3-4.5L6 6.6h4.4L12 2z"/>
+                            </svg>
+                        </span>
+                        <span class="quick-menu__label">Suggested prompts</span>
+                    </button>
+                    <button id="modeToggle" type="button" class="quick-menu__item" aria-expanded="false" aria-controls="chatModes">
+                        <span class="quick-menu__icon" aria-hidden="true">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                                <circle cx="12" cy="12" r="7"/>
+                                <circle cx="12" cy="12" r="3"/>
+                                <path d="M12 5v2M19 12h-2M12 19v-2M7 12H5"/>
+                            </svg>
+                        </span>
+                        <span class="quick-menu__label">Focus modes</span>
+                    </button>
+                    <button id="searchToggle" type="button" class="quick-menu__item" aria-controls="searchPanel" data-close-menu="true">
+                        <span class="quick-menu__icon" aria-hidden="true">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                                <circle cx="11" cy="11" r="6"/>
+                                <path d="M20 20l-3.5-3.5"/>
+                            </svg>
+                        </span>
+                        <span class="quick-menu__label">Search</span>
+                    </button>
+                    <button id="clear-history-button" type="button" class="quick-menu__item" data-close-menu="true">
+                        <span class="quick-menu__icon" aria-hidden="true">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                                <path d="M15 5h5M4 5h5m0 0l1-2h4l1 2m-6 0h6m1 3v10a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V8h10z"/>
+                            </svg>
+                        </span>
+                        <span class="quick-menu__label">Clear chat</span>
+                    </button>
+                    <button id="emergencySupport" type="button" class="quick-menu__item quick-menu__item--danger" data-close-menu="true">
+                        <span class="quick-menu__icon" aria-hidden="true">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                                <path d="M12 3l9 16H3l9-16z"/>
+                                <path d="M12 9v4"/>
+                                <path d="M12 17h.01"/>
+                            </svg>
+                        </span>
+                        <span class="quick-menu__label">Emergency support</span>
+                    </button>
+                </nav>
+                <section id="chatModes" class="quick-menu__modes" aria-label="Focus modes" hidden>
+                    <h3>Focus modes</h3>
+                    <div class="quick-menu__mode-list">
+                        <button type="button" class="mode-pill mode-btn active" data-mode="general" aria-pressed="true">General</button>
+                        <button type="button" class="mode-pill mode-btn" data-mode="assessment" aria-pressed="false">Assessment</button>
+                        <button type="button" class="mode-pill mode-btn" data-mode="decision" aria-pressed="false">Decision support</button>
+                        <button type="button" class="mode-pill mode-btn" data-mode="emergency" aria-pressed="false">Emergency calm</button>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </aside>
+    <div id="quickMenuBackdrop" class="quick-menu-backdrop" hidden></div>
+
     <div id="milestoneCelebration" class="celebration" hidden>
         <div class="celebration__content" role="alertdialog" aria-modal="true">
             <div class="celebration__icon" aria-hidden="true">🎉</div>
@@ -116,6 +186,7 @@
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
+    <script src="shared-profile.js"></script>
     <script src="enhanced-chat.js"></script>
 </body>
 </html>
