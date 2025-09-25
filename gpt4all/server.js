@@ -30,14 +30,56 @@ function buildOptimizedPrompt(userMessage, contextObj = {}) {
     let prompt = `${SYSTEM_PROMPT}\n\n`;
 
     // Add user profile
-    if (contextObj.profile) {
-        const p = contextObj.profile;
-        prompt += `User Profile: ${p.name || p.userId}, Phase: ${p.phase}, Current Items: ${p.currentItems}, Target: ${p.targetItems}, Lifestyle: ${p.lifestyle}, Motivation: ${p.motivation}, Challenges: ${(p.challenges||[]).join(', ')}\n`;
+    if (contextObj.profile || contextObj.computed) {
+        const p = contextObj.profile || {};
+        const metrics = contextObj.computed?.metrics || {};
+        const name = p.name || p.userId || 'Minimalism client';
+        const phase = p.phase || contextObj.computed?.phaseLabel || 'unspecified';
+        const currentItems = p.currentItems ?? metrics.currentItems ?? 'unknown';
+        const targetItems = p.targetItems ?? metrics.targetItems ?? '50';
+        const lifestyle = p.lifestyle || contextObj.computed?.lifestyleLabel || 'not provided';
+        const motivation = p.motivation || 'clarity and simplicity';
+        const challenges = (p.challenges || contextObj.computed?.challenges || []).join(', ');
+        prompt += `User Profile: ${name}, Phase: ${phase}, Current Items: ${currentItems}, Target: ${targetItems}, Lifestyle: ${lifestyle}, Motivation: ${motivation}`;
+        if (challenges) {
+            prompt += `, Challenges: ${challenges}`;
+        }
+        prompt += '\n';
     }
     // Add progress
     if (contextObj.progress) {
         const pr = contextObj.progress;
-        prompt += `Progress: ${pr.milestones?.length || 0} milestones, Current Phase: ${pr.currentPhase}, Last Update: ${pr.lastUpdate}\n`;
+        const currentCount = pr.currentItemCount ?? pr.metrics?.currentItems;
+        const progressBits = [];
+        progressBits.push(`${pr.milestones?.length || 0} milestones tracked`);
+        if (pr.currentPhase) progressBits.push(`phase ${pr.currentPhase}`);
+        if (currentCount !== undefined) progressBits.push(`current items ${currentCount}`);
+        if (pr.lastUpdate) progressBits.push(`last update ${pr.lastUpdate}`);
+        prompt += `Progress: ${progressBits.join(', ')}\n`;
+    }
+    // Add computed summary / metrics
+    if (contextObj.computed) {
+        const comp = contextObj.computed;
+        const metrics = comp.metrics || {};
+        const metricParts = [];
+        if (typeof comp.improvementPercent === 'number') {
+            metricParts.push(`journey completion ${comp.improvementPercent}%`);
+        }
+        if (metrics.startItems !== undefined) {
+            metricParts.push(`started with ${metrics.startItems} items`);
+        }
+        if (metrics.currentItems !== undefined) {
+            metricParts.push(`currently ${metrics.currentItems} items`);
+        }
+        if (metrics.targetItems !== undefined) {
+            metricParts.push(`target ${metrics.targetItems} items`);
+        }
+        if (metricParts.length > 0) {
+            prompt += `Journey Metrics: ${metricParts.join(', ')}\n`;
+        }
+        if (comp.phaseLabel) {
+            prompt += `Dashboard Phase Label: ${comp.phaseLabel}\n`;
+        }
     }
     // Add goals
     if (contextObj.goals) {
@@ -46,6 +88,9 @@ function buildOptimizedPrompt(userMessage, contextObj = {}) {
     // Add recent chat
     if (contextObj.recentChat && contextObj.recentChat.length > 0) {
         prompt += 'Recent Conversation: ' + contextObj.recentChat.map(e => `${e.role}: ${e.content.substring(0,80)}`).join(' | ') + '\n';
+    }
+    if (contextObj.mode) {
+        prompt += `Engagement Mode: ${contextObj.mode}\n`;
     }
     // Add session context (last exchange)
     if (contextObj.sessionContext) {
@@ -57,17 +102,34 @@ function buildOptimizedPrompt(userMessage, contextObj = {}) {
 }
 
 // Smart context management - keeps last 2-3 exchanges for speed
-function updateSessionContext(socketId, userMessage, aiResponse) {
-    const session = userSessions.get(socketId) || { exchanges: [] };
-    
+function updateSessionContext(sessionKey, userMessage, aiResponse) {
+    const session = userSessions.get(sessionKey) || { exchanges: [] };
+
+    const normalize = (value) => {
+        if (typeof value === 'string') return value;
+        if (value === null || value === undefined) return '';
+        if (typeof value === 'object') {
+            if (typeof value.message === 'string') return value.message;
+            try {
+                return JSON.stringify(value);
+            } catch {
+                return String(value);
+            }
+        }
+        return String(value);
+    };
+
+    const userText = normalize(userMessage).slice(0, 100);
+    const aiText = normalize(aiResponse).slice(0, 100);
+
     // Keep only last 1 exchange for optimal speed and prevent confusion
-    session.exchanges = [{ user: userMessage.slice(0, 100), ai: aiResponse.slice(0, 100) }];
-    
-    userSessions.set(socketId, session);
+    session.exchanges = [{ user: userText, ai: aiText }];
+
+    userSessions.set(sessionKey, session);
     
     // Build compact context string - simple format
     return session.exchanges
-        .map(ex => `Previous: User asked about ${ex.user}... You advised: ${ex.ai}...`)
+    .map(ex => `Previous: User asked about ${ex.user}... You advised: ${ex.ai}...`)
         .join(' ');
 }
 
@@ -87,7 +149,7 @@ try {
 // Enhanced Chat API with context awareness
 app.post('/api/chat', async (req, res) => {
     try {
-        const { message, userId = 'anonymous', context = null, profile, progress, goals, recentChat } = req.body;
+        const { message, userId = 'anonymous', context = null, profile, progress, goals, recentChat, computed = null, mode = 'general' } = req.body;
         console.log(`[API] /api/chat called by ${userId}. Message length: ${message ? message.length : 0}`);
 
         if (!message) {
@@ -108,6 +170,8 @@ app.post('/api/chat', async (req, res) => {
             progress,
             goals,
             recentChat,
+            computed,
+            mode,
             sessionContext: context || (session.exchanges.length > 0 
                 ? `Previous: User asked about ${session.exchanges[0].user}... You advised: ${session.exchanges[0].ai}...`
                 : '')
@@ -330,7 +394,29 @@ io.on('connection', (socket) => {
     userSessions.set(socket.id, { exchanges: [] });
     
     socket.on('chat message', async (msg) => {
-        console.log(`[Socket] chat message from ${socket.id}. Length=${(msg||'').length}`);
+        const payload = (msg && typeof msg === 'object') ? msg : { message: msg };
+        const {
+            message: rawMessage,
+            userId = 'anonymous',
+            profile = null,
+            progress = null,
+            goals = [],
+            recentChat = [],
+            mode = 'general',
+            computed = null
+        } = payload;
+
+        const messageText = typeof rawMessage === 'string' ? rawMessage : (rawMessage == null ? '' : String(rawMessage));
+        const sessionKey = userId || socket.id;
+
+        console.log(`[Socket] chat message from ${socket.id}. Length=${messageText.length} (session=${sessionKey})`);
+
+        if (!messageText) {
+            return socket.emit('chat message part', {
+                user: 'AI',
+                message: 'I need a message to respond to. Please share what you would like to work on.'
+            });
+        }
 
         if (!model) {
             return socket.emit('chat message part', { 
@@ -341,16 +427,35 @@ io.on('connection', (socket) => {
 
         try {
             // Broadcast the user's message to other clients (avoid echo to sender)
-            socket.broadcast.emit('chat message', { user: 'User', message: msg });
+            socket.broadcast.emit('chat message', { user: 'User', message: messageText });
+
+            if (profile) {
+                userProfiles.set(sessionKey, profile);
+            }
+            if (progress) {
+                userProgress.set(sessionKey, progress);
+            }
 
             // Get session context for personalized coaching
-            const session = userSessions.get(socket.id);
+            const session = userSessions.get(sessionKey) || userSessions.get(socket.id) || { exchanges: [] };
+            userSessions.set(sessionKey, session);
+
             const contextString = session.exchanges.length > 0 
                 ? `Previous: User asked about ${session.exchanges[0].user}... You advised: ${session.exchanges[0].ai}...`
                 : '';
 
+            const contextObj = {
+                profile: profile || userProfiles.get(sessionKey) || null,
+                progress: progress || userProgress.get(sessionKey) || null,
+                goals: Array.isArray(goals) ? goals : [],
+                recentChat: Array.isArray(recentChat) ? recentChat : [],
+                mode,
+                computed: computed || null,
+                sessionContext: contextString
+            };
+
             // Build optimized coaching prompt
-            const coachingPrompt = buildOptimizedPrompt(msg, { sessionContext: contextString });
+            const coachingPrompt = buildOptimizedPrompt(messageText, contextObj);
 
             // Create streaming response with coaching context
             const responseStream = createCompletionStream(model, coachingPrompt, {
@@ -370,7 +475,7 @@ io.on('connection', (socket) => {
 
             responseStream.tokens.on("end", () => {
                 // Update session context for next interaction
-                updateSessionContext(socket.id, msg, fullResponse);
+                updateSessionContext(sessionKey, messageText, fullResponse);
                 socket.emit('chat message end', { user: 'AI' });
                 console.log(`[Socket] Completed response to ${socket.id}. Bytes=${fullResponse.length}`);
             });

@@ -93,5 +93,10 @@
 
   <script src="shared-profile.js"></script>
   <script src="dashboard.js"></script>
+  <script>
+    if (window.top !== window.self) {
+      document.body.dataset.embedded = 'true';
+    }
+  </script>
 </body>
 </html>

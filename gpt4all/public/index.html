@@ -17,9 +17,9 @@
                 </div>
             </div>
             <nav class="sidebar__nav" aria-label="Main">
-                <a class="nav-link active" href="index.html">Chat session</a>
-                <a class="nav-link" href="assessment.html">Assessment</a>
-                <a class="nav-link" href="dashboard.html">Dashboard</a>
+                <a class="nav-link active" href="#chat" data-view="chat">Chat session</a>
+                <a class="nav-link" href="#assessment" data-view="assessment">Assessment</a>
+                <a class="nav-link" href="#dashboard" data-view="dashboard">Dashboard</a>
             </nav>
             <div id="userInfo" class="sidebar__profile" aria-live="polite"></div>
             <div class="sidebar__note">
@@ -28,13 +28,13 @@
             </div>
         </aside>
 
-        <main class="workspace" aria-live="polite">
+    <main class="workspace" aria-live="polite" data-view-content="chat">
             <header class="chat-topbar">
                 <div class="chat-topbar__details">
                     <h1 class="chat-topbar__title">Coaching session</h1>
                     <div class="status-chip" role="status" aria-label="Coach online">
                         <span class="status-chip__dot" aria-hidden="true"></span>
-                        <span>Coach online</span>
+                        <span class="status-chip__text">Coach online</span>
                     </div>
                 </div>
                 <button id="quickMenuToggle" type="button" class="icon-button icon-button--ghost" aria-expanded="false" aria-controls="quickMenu">
@@ -88,6 +88,10 @@
                 </form>
             </footer>
         </main>
+        <div id="externalView" class="workspace workspace--external" data-view-content="external" hidden aria-hidden="true">
+            <iframe src="assessment.html" id="assessmentFrame" class="app-frame" data-view-frame="assessment" title="Assessment" loading="lazy" hidden aria-hidden="true"></iframe>
+            <iframe src="dashboard.html" id="dashboardFrame" class="app-frame" data-view-frame="dashboard" title="Dashboard" loading="lazy" hidden aria-hidden="true"></iframe>
+        </div>
     </div>
 
     <aside id="searchPanel" class="search-panel" role="dialog" aria-modal="true" aria-hidden="true">
@@ -184,10 +188,10 @@
             <button type="button" class="primary-button" onclick="closeCelebration()">Keep going</button>
         </div>
     </div>
-
     <script src="/socket.io/socket.io.js"></script>
     <script src="shared-profile.js"></script>
     <script src="enhanced-chat.js"></script>
+    <script src="view-manager.js"></script>
 </body>
 </html>
 

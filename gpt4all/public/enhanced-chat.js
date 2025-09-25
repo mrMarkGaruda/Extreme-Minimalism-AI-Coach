@@ -6,6 +6,7 @@ class EnhancedMinimalismChat {
         this.socket = io();
         this.userProfile = null;
         this.userProgress = null;
+    this.userGoals = [];
         this.conversationHistory = [];
         this.currentMode = 'general';
         this.isTyping = false;
@@ -49,6 +50,18 @@ class EnhancedMinimalismChat {
             ]
         };
 
+        this.skipDisconnectNotice = false;
+        this.pendingDisconnectNotice = false;
+        this.hasWelcomed = false;
+
+        window.addEventListener('pagehide', () => {
+            this.skipDisconnectNotice = true;
+        });
+
+        window.addEventListener('pageshow', () => {
+            this.skipDisconnectNotice = false;
+        });
+
         this.cacheDom();
         this.init();
     }
@@ -61,6 +74,9 @@ class EnhancedMinimalismChat {
         this.emptyState = document.getElementById('emptyState');
     this.emptyStateCloseButton = document.getElementById('emptyStateClose');
         this.typingIndicator = document.getElementById('typingIndicator');
+        this.statusChip = document.querySelector('.status-chip');
+        this.statusChipText = this.statusChip?.querySelector('.status-chip__text');
+        this.statusChipDot = this.statusChip?.querySelector('.status-chip__dot');
         this.suggestionContainer = document.getElementById('suggestion-container');
         this.suggestionsToggleButton = document.getElementById('suggestions-toggle-button');
         this.modeToggleButton = document.getElementById('modeToggle');
@@ -92,6 +108,7 @@ class EnhancedMinimalismChat {
         this.updateUserInterface();
         this.loadConversationHistory();
         this.checkForMilestones();
+        this.updateCoachStatus(this.socket.connected ? 'online' : 'offline');
     }
 
     loadUserData() {
@@ -108,6 +125,12 @@ class EnhancedMinimalismChat {
                 if (progressData) {
                     this.userProgress = JSON.parse(progressData);
                 }
+            }
+
+            const goalsData = localStorage.getItem('minimalism_goals');
+            if (goalsData) {
+                const parsedGoals = JSON.parse(goalsData);
+                this.userGoals = Array.isArray(parsedGoals) ? parsedGoals : [];
             }
 
             // Load conversation history
@@ -132,6 +155,26 @@ class EnhancedMinimalismChat {
         this.userProgress = snapshot.progress;
         this.profileComputed = snapshot.computed;
         return snapshot;
+    }
+
+    getGoals() {
+        if (Array.isArray(this.userGoals) && this.userGoals.length) {
+            return this.userGoals;
+        }
+        try {
+            const goalsData = localStorage.getItem('minimalism_goals');
+            if (goalsData) {
+                const parsed = JSON.parse(goalsData);
+                if (Array.isArray(parsed)) {
+                    this.userGoals = parsed;
+                    return parsed;
+                }
+            }
+        } catch (error) {
+            console.warn('[Chat] Failed to load goals from storage', error);
+        }
+        this.userGoals = [];
+        return this.userGoals;
     }
 
     setupEventListeners() {
@@ -313,6 +356,15 @@ class EnhancedMinimalismChat {
         this.toggleSendAvailability();
     }
 
+    updateCoachStatus(status) {
+        if (!this.statusChip || !this.statusChipText) return;
+        const isOnline = status === 'online';
+        const label = isOnline ? 'Coach online' : 'Coach offline';
+        this.statusChip.classList.toggle('status-chip--offline', !isOnline);
+        this.statusChipText.textContent = label;
+        this.statusChip.setAttribute('aria-label', label);
+    }
+
     toggleSendAvailability() {
         if (!this.sendButton || !this.messageInput) return;
         this.sendButton.disabled = this.messageInput.value.trim().length === 0;
@@ -414,7 +466,17 @@ class EnhancedMinimalismChat {
     setupSocketEvents() {
         this.socket.on('connect', () => {
             console.log('Connected to minimalism coach');
-            this.addSystemMessage('Your minimalism coach is ready to help.');
+
+            this.updateCoachStatus('online');
+
+            if (!this.hasWelcomed) {
+                this.addSystemMessage('Your minimalism coach is ready to help.');
+                this.hasWelcomed = true;
+            } else if (this.pendingDisconnectNotice) {
+                this.addSystemMessage('Reconnected to your coach. We can pick up right where we left off.');
+                this.pendingDisconnectNotice = false;
+            }
+            this.skipDisconnectNotice = false;
             
             // Send initial context if user has profile
             if (this.userProfile) {
@@ -436,9 +498,33 @@ class EnhancedMinimalismChat {
             this.setTypingIndicator(false);
         });
 
-        this.socket.on('disconnect', () => {
-            this.addSystemMessage('Connection lost. Trying to reconnect...');
+        this.socket.on('disconnect', (reason) => {
+            this.updateCoachStatus('offline');
+
+            if (this.skipDisconnectNotice) {
+                this.skipDisconnectNotice = false;
+                return;
+            }
+
+            if (document.visibilityState === 'hidden') {
+                this.pendingDisconnectNotice = true;
+                return;
+            }
+
+            if (reason !== 'io client disconnect') {
+                this.addSystemMessage('Connection lost. Trying to reconnect...');
+            }
         });
+
+        this.socket.on('connect_error', () => {
+            this.updateCoachStatus('offline');
+        });
+
+        if (this.socket.io) {
+            this.socket.io.on('reconnect_attempt', () => {
+                this.updateCoachStatus('offline');
+            });
+        }
     }
 
     updateUserInterface() {
@@ -596,24 +682,33 @@ class EnhancedMinimalismChat {
         
         // Build enhanced context
         const enhancedContext = this.buildEnhancedContext(message);
-        
+
         try {
+            const socketPayload = this.buildSocketPayload(message);
+
             // Prefer real-time streaming via Socket.IO if connected
             if (this.socket && this.socket.connected) {
                 console.log('[Chat] Using Socket.IO streaming');
-                this.socket.emit('chat message', message);
+                this.socket.emit('chat message', socketPayload);
             } else {
                 // Fallback to REST API
                 console.log('[Chat] Socket not connected, using REST API');
                 const payload = {
                     message: message,
-                    userId: this.userProfile?.id || 'anonymous',
+                    userId: this.userProfile?.userId || this.userProfile?.id || 'anonymous',
                     context: enhancedContext,
                     mode: this.currentMode,
                     profile: this.userProfile,
                     progress: this.userProgress,
-                    goals: this.getGoals?.() || [],
-                    recentChat: this.conversationHistory.slice(-8)
+                    goals: this.getGoals() || [],
+                    recentChat: this.conversationHistory.slice(-8),
+                    computed: this.profileComputed || {
+                        improvementPercent: this.getImprovementPercentage(),
+                        metrics: {
+                            currentItems: this.getCurrentItemCount(),
+                            targetItems: this.userProfile?.targetItems || 50
+                        }
+                    }
                 };
                 const response = await fetch('/api/chat', {
                     method: 'POST',
@@ -628,12 +723,13 @@ class EnhancedMinimalismChat {
                     console.log('[Chat] AI response received (REST)');
                 } else {
                     console.warn('[Chat] REST failed, falling back to Socket.IO');
-                    this.socket.emit('chat message', message);
+                    this.socket.emit('chat message', socketPayload);
                 }
             }
         } catch (error) {
             console.error('[Chat] Error sending message, using Socket.IO fallback:', error);
-            this.socket.emit('chat message', message);
+            const fallbackPayload = this.buildSocketPayload(message);
+            this.socket.emit('chat message', fallbackPayload);
         }
         
         // Check for progress updates
@@ -729,6 +825,27 @@ class EnhancedMinimalismChat {
         }
         
         return context;
+    }
+
+    buildSocketPayload(message) {
+        const computedSummary = this.profileComputed || {
+            improvementPercent: this.getImprovementPercentage(),
+            metrics: {
+                currentItems: this.getCurrentItemCount(),
+                targetItems: this.userProfile?.targetItems || 50
+            }
+        };
+
+        return {
+            message,
+            userId: this.userProfile?.userId || this.userProfile?.id || 'anonymous',
+            profile: this.userProfile || null,
+            progress: this.userProgress || null,
+            goals: this.getGoals(),
+            recentChat: this.conversationHistory.slice(-6),
+            mode: this.currentMode,
+            computed: computedSummary
+        };
     }
 
     addMessage(user, message, isUser) {

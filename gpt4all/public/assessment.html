@@ -309,5 +309,10 @@
 
     <script src="shared-profile.js"></script>
     <script src="assessment.js"></script>
+    <script>
+        if (window.top !== window.self) {
+            document.body.dataset.embedded = 'true';
+        }
+    </script>
 </body>
 </html>
