@@ -7,7 +7,8 @@ let aiMessageElement; // Keep track of the current AI message element
 chatForm.addEventListener('submit', (e) => {
     e.preventDefault();
     if (chatInput.value) {
-        appendMessage('User', chatInput.value); // Append user message immediately
+        console.log('[CLI] Submit message');
+        appendMessage('User', chatInput.value); // immediate feedback
         socket.emit('chat message', chatInput.value);
         chatInput.value = ''; // Clear the input
     }
@@ -21,6 +22,7 @@ socket.on('chat message part', (data) => {
 socket.on('chat message end', () => {
     aiMessageElement = null; // Reset the AI message element tracker after the response is complete
     chatMessages.scrollTop = chatMessages.scrollHeight;
+    console.log('[CLI] AI message complete');
 });
 
 // Function to append a full message
@@ -32,6 +34,7 @@ function appendMessage(user, message) {
     if (user === 'AI') {
         aiMessageElement = null; // Reset the AI message element tracker
     }
+    chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
 // Function to append a part of an AI message
@@ -47,6 +50,7 @@ function appendMessagePart(user, message) {
         // Append the new part to the existing AI message element
         const partMessageElement = aiMessageElement.querySelector('#part-message');
         partMessageElement.innerHTML += formatMessage(message);
+        console.log('[CLI] Token:', message);
     }
 }
 

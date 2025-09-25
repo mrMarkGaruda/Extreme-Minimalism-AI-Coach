@@ -2,7 +2,7 @@ import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import { createCompletionStream, loadModel } from 'gpt4all';
-
+import { MINIMALISM_COACH_PROMPT } from './prompts/minimalism-coach.js';
 
 const localModelPath = 'orca-mini-3b-gguf2-q4_0.gguf';
 
@@ -10,9 +10,66 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
+// Middleware for parsing JSON requests
+app.use(express.json());
 app.use(express.static('public'));
 
 let model;
+
+// Smart session management for personalized coaching
+const userSessions = new Map();
+const userProfiles = new Map();
+const userProgress = new Map();
+
+// Pre-optimized prompt for lightning-fast responses
+const SYSTEM_PROMPT = MINIMALISM_COACH_PROMPT.trim();
+
+// Efficient context builder for maintaining conversation flow
+function buildOptimizedPrompt(userMessage, contextObj = {}) {
+    // Clean, direct prompt structure to prevent self-conversation
+    let prompt = `${SYSTEM_PROMPT}\n\n`;
+
+    // Add user profile
+    if (contextObj.profile) {
+        const p = contextObj.profile;
+        prompt += `User Profile: ${p.name || p.userId}, Phase: ${p.phase}, Current Items: ${p.currentItems}, Target: ${p.targetItems}, Lifestyle: ${p.lifestyle}, Motivation: ${p.motivation}, Challenges: ${(p.challenges||[]).join(', ')}\n`;
+    }
+    // Add progress
+    if (contextObj.progress) {
+        const pr = contextObj.progress;
+        prompt += `Progress: ${pr.milestones?.length || 0} milestones, Current Phase: ${pr.currentPhase}, Last Update: ${pr.lastUpdate}\n`;
+    }
+    // Add goals
+    if (contextObj.goals) {
+        prompt += `Goals: ${(contextObj.goals||[]).map(g=>g.text).join('; ')}\n`;
+    }
+    // Add recent chat
+    if (contextObj.recentChat && contextObj.recentChat.length > 0) {
+        prompt += 'Recent Conversation: ' + contextObj.recentChat.map(e => `${e.role}: ${e.content.substring(0,80)}`).join(' | ') + '\n';
+    }
+    // Add session context (last exchange)
+    if (contextObj.sessionContext) {
+        prompt += `Context: ${contextObj.sessionContext}\n`;
+    }
+
+    prompt += `Human: ${userMessage}\n\nRespond as the minimalism coach:`;
+    return prompt;
+}
+
+// Smart context management - keeps last 2-3 exchanges for speed
+function updateSessionContext(socketId, userMessage, aiResponse) {
+    const session = userSessions.get(socketId) || { exchanges: [] };
+    
+    // Keep only last 1 exchange for optimal speed and prevent confusion
+    session.exchanges = [{ user: userMessage.slice(0, 100), ai: aiResponse.slice(0, 100) }];
+    
+    userSessions.set(socketId, session);
+    
+    // Build compact context string - simple format
+    return session.exchanges
+        .map(ex => `Previous: User asked about ${ex.user}... You advised: ${ex.ai}...`)
+        .join(' ');
+}
 
 // Load the GPT4All model from the local path
 
@@ -23,43 +80,320 @@ try {
     console.error('Error loading GPT4All model:', err);
 }
 
+// ===========================================
+// REST API ENDPOINTS
+// ===========================================
 
-io.on('connection', (socket) => {
-    console.log('New client connected');
-    socket.on('chat message', async (msg) => {
-        console.log('Message received:', msg);
+// Enhanced Chat API with context awareness
+app.post('/api/chat', async (req, res) => {
+    try {
+        const { message, userId = 'anonymous', context = null, profile, progress, goals, recentChat } = req.body;
+        console.log(`[API] /api/chat called by ${userId}. Message length: ${message ? message.length : 0}`);
+
+        if (!message) {
+            return res.status(400).json({ error: 'Message is required' });
+        }
 
         if (!model) {
-            return socket.emit('chat message part', { user: 'AI', message: 'Model not loaded.' });
+            return res.status(503).json({ error: 'AI model is not ready. Please try again in a moment.' });
+        }
+
+        // Get or create user session
+        const sessionKey = userId;
+        const session = userSessions.get(sessionKey) || { exchanges: [] };
+
+        // Build context object
+        const contextObj = {
+            profile,
+            progress,
+            goals,
+            recentChat,
+            sessionContext: context || (session.exchanges.length > 0 
+                ? `Previous: User asked about ${session.exchanges[0].user}... You advised: ${session.exchanges[0].ai}...`
+                : '')
+        };
+
+        const coachingPrompt = buildOptimizedPrompt(message, contextObj);
+
+        // Generate response with streaming for speed
+        const responseStream = createCompletionStream(model, coachingPrompt, {
+            temperature: 0.7,
+            max_tokens: 150,
+            top_p: 0.9,
+            stop: ['\n\nHuman:', '\nUser:', '\nCoach:', 'Human:', 'User:', 'Coach:']
+        });
+
+        let fullResponse = '';
+
+        // Collect streaming response
+        for await (const chunk of responseStream.tokens) {
+            fullResponse += chunk.toString();
+        }
+
+        // Clean response
+        fullResponse = fullResponse.trim();
+
+        // Update session context
+        updateSessionContext(sessionKey, message, fullResponse);
+
+        console.log(`[API] /api/chat response ready. Bytes: ${fullResponse.length}`);
+        res.json({
+            response: fullResponse,
+            userId: sessionKey,
+            timestamp: new Date().toISOString(),
+            context: contextObj.sessionContext ? 'Used previous context' : 'Fresh conversation'
+        });
+
+    } catch (error) {
+        console.error('Chat API error:', error);
+        res.status(500).json({ 
+            error: 'I encountered a technical issue. Let\'s continue your minimalism journey - what would you like to work on?' 
+        });
+    }
+});
+
+// User Assessment API for profiling
+app.post('/api/assessment', async (req, res) => {
+    try {
+        const { currentItems, lifestyle, motivation, challenges, userId = 'anonymous' } = req.body;
+        console.log(`[API] /api/assessment by ${userId}. currentItems=${currentItems}`);
+
+        if (!currentItems) {
+            return res.status(400).json({ error: 'currentItems count is required' });
+        }
+
+        // Determine phase based on current items
+        let phase, recommendations = [];
+        
+        if (currentItems > 500) {
+            phase = 'initial';
+            recommendations = [
+                'Start with obvious duplicates (multiple phone chargers, excess clothing)',
+                'Focus on expired or broken items first',
+                'Tackle one room at a time to avoid overwhelm'
+            ];
+        } else if (currentItems > 200) {
+            phase = 'reduction';
+            recommendations = [
+                'Apply the "one year rule" - if unused for a year, consider removing',
+                'Look for multi-use alternatives (phone as camera, clock, etc.)',
+                'Focus on emotional attachments - address the psychology behind keeping items'
+            ];
+        } else if (currentItems > 100) {
+            phase = 'refinement';
+            recommendations = [
+                'Evaluate each item\'s frequency of use and emotional value',
+                'Consider quality over quantity for remaining items',
+                'Start thinking about your ideal 50-item list'
+            ];
+        } else if (currentItems > 50) {
+            phase = 'optimization';
+            recommendations = [
+                'Make hard choices about sentimental items',
+                'Optimize for absolute essentials and joy-bringing items',
+                'Create your final 50-item list and stick to it'
+            ];
+        } else {
+            phase = 'maintenance';
+            recommendations = [
+                'Maintain your 50-item lifestyle with mindful consumption',
+                'Share your journey to inspire others',
+                'Focus on experiences over possessions'
+            ];
+        }
+
+        // Create user profile
+        const profile = {
+            userId,
+            currentItems,
+            lifestyle: lifestyle || 'standard',
+            motivation: motivation || 'simplicity',
+            challenges: challenges || [],
+            phase,
+            assessmentDate: new Date().toISOString(),
+            targetItems: phase === 'maintenance' ? 50 : Math.max(50, Math.floor(currentItems * 0.6))
+        };
+
+        // Store profile
+        userProfiles.set(userId, profile);
+
+        res.json({
+            profile,
+            recommendations,
+            phase,
+            nextSteps: recommendations.slice(0, 3),
+            estimatedTimeframe: getEstimatedTimeframe(currentItems, phase)
+        });
+
+    } catch (error) {
+        console.error('Assessment API error:', error);
+        res.status(500).json({ error: 'Failed to process assessment' });
+    }
+});
+
+// Progress Tracking API
+app.get('/api/progress/:userId?', (req, res) => {
+    try {
+        const userId = req.params.userId || 'anonymous';
+        console.log(`[API] GET /api/progress for ${userId}`);
+        const progress = userProgress.get(userId) || {
+            userId,
+            milestones: [],
+            currentPhase: 'initial',
+            startDate: new Date().toISOString(),
+            lastUpdate: new Date().toISOString()
+        };
+
+        res.json(progress);
+    } catch (error) {
+        console.error('Progress GET error:', error);
+        res.status(500).json({ error: 'Failed to retrieve progress' });
+    }
+});
+
+app.post('/api/progress', (req, res) => {
+    try {
+        const { userId = 'anonymous', itemCount, milestone, notes } = req.body;
+        console.log(`[API] POST /api/progress by ${userId}. itemCount=${itemCount}`);
+
+        if (!itemCount) {
+            return res.status(400).json({ error: 'itemCount is required' });
+        }
+
+        // Get existing progress or create new
+        const progress = userProgress.get(userId) || {
+            userId,
+            milestones: [],
+            currentPhase: 'initial',
+            startDate: new Date().toISOString()
+        };
+
+        // Add new milestone
+        const newMilestone = {
+            itemCount,
+            date: new Date().toISOString(),
+            milestone: milestone || `Reached ${itemCount} items`,
+            notes: notes || '',
+            improvement: progress.milestones.length > 0 
+                ? progress.milestones[progress.milestones.length - 1].itemCount - itemCount 
+                : 0
+        };
+
+        progress.milestones.push(newMilestone);
+        progress.lastUpdate = new Date().toISOString();
+        progress.currentItemCount = itemCount;
+
+        // Update phase based on current item count
+        if (itemCount <= 50) progress.currentPhase = 'maintenance';
+        else if (itemCount <= 100) progress.currentPhase = 'optimization';
+        else if (itemCount <= 200) progress.currentPhase = 'refinement';
+        else if (itemCount <= 500) progress.currentPhase = 'reduction';
+        else progress.currentPhase = 'initial';
+
+        // Store updated progress
+        userProgress.set(userId, progress);
+
+        res.json({
+            success: true,
+            progress,
+            latestMilestone: newMilestone,
+            message: `Great progress! You've reduced to ${itemCount} items.`
+        });
+
+    } catch (error) {
+        console.error('Progress POST error:', error);
+        res.status(500).json({ error: 'Failed to update progress' });
+    }
+});
+
+// Helper function for timeframe estimation
+function getEstimatedTimeframe(currentItems, phase) {
+    const timeframes = {
+        initial: '2-3 months',
+        reduction: '3-4 months', 
+        refinement: '2-3 months',
+        optimization: '1-2 months',
+        maintenance: 'Ongoing'
+    };
+    return timeframes[phase] || '2-3 months';
+}
+
+// ===========================================
+// SOCKET.IO REAL-TIME CHAT (Legacy support)
+// ===========================================
+
+
+io.on('connection', (socket) => {
+    console.log(`[Socket] Client connected: ${socket.id}`);
+    
+    // Initialize session for this client
+    userSessions.set(socket.id, { exchanges: [] });
+    
+    socket.on('chat message', async (msg) => {
+        console.log(`[Socket] chat message from ${socket.id}. Length=${(msg||'').length}`);
+
+        if (!model) {
+            return socket.emit('chat message part', { 
+                user: 'AI', 
+                message: 'Minimalism coach is starting up. Please wait a moment...' 
+            });
         }
 
         try {
-            // Broadcast the user's message
-            io.emit('chat message', { user: 'User', message: msg });
+            // Broadcast the user's message to other clients (avoid echo to sender)
+            socket.broadcast.emit('chat message', { user: 'User', message: msg });
 
-            // Create a streaming response
-            const responseStream = createCompletionStream( model, msg);
-            responseStream.tokens.on("data", (data) => {
-                socket.emit('chat message part', { user: 'AI', message: data.toString() });
+            // Get session context for personalized coaching
+            const session = userSessions.get(socket.id);
+            const contextString = session.exchanges.length > 0 
+                ? `Previous: User asked about ${session.exchanges[0].user}... You advised: ${session.exchanges[0].ai}...`
+                : '';
+
+            // Build optimized coaching prompt
+            const coachingPrompt = buildOptimizedPrompt(msg, { sessionContext: contextString });
+
+            // Create streaming response with coaching context
+            const responseStream = createCompletionStream(model, coachingPrompt, {
+                temperature: 0.7, // Balanced creativity for coaching
+                max_tokens: 150,  // Keep responses focused and prevent rambling
+                top_p: 0.9,
+                stop: ['\n\nHuman:', '\nUser:', '\nCoach:', 'Human:', 'User:', 'Coach:'] // Prevent self-conversation
             });
 
+            let fullResponse = '';
 
-            // Handle the end of the stream
-            socket.emit('chat message end', { user: 'AI' });
+            responseStream.tokens.on("data", (data) => {
+                const chunk = data.toString();
+                fullResponse += chunk;
+                socket.emit('chat message part', { user: 'AI', message: chunk });
+            });
+
+            responseStream.tokens.on("end", () => {
+                // Update session context for next interaction
+                updateSessionContext(socket.id, msg, fullResponse);
+                socket.emit('chat message end', { user: 'AI' });
+                console.log(`[Socket] Completed response to ${socket.id}. Bytes=${fullResponse.length}`);
+            });
 
         } catch (error) {
-            console.error('Error generating response:', error);
-            socket.emit('chat message part', { user: 'AI', message: 'Sorry, I encountered an error while processing your request.' });
+            console.error('Error in minimalism coaching:', error);
+            socket.emit('chat message part', { 
+                user: 'AI', 
+                message: 'I apologize, but I encountered a technical issue. Let\'s continue your minimalism journey - what would you like to work on?' 
+            });
         }
     });
 
     socket.on('disconnect', () => {
-        console.log('Client disconnected');
+        console.log(`[Socket] Client disconnected: ${socket.id}`);
+        // Clean up session to prevent memory leaks
+        userSessions.delete(socket.id);
     });
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`Extreme Minimalism AI Coach running on port ${PORT}`);
+    console.log(`Server started. Coaching sessions ready.`);
 });
 

@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Assessment — Minimalism Coach</title>
+    <link rel="stylesheet" href="minimal-design.css">
+</head>
+<body>
+    <div class="app-shell">
+        <aside class="sidebar" aria-label="Primary">
+            <div class="sidebar__brand">
+                <span class="sidebar__mark" aria-hidden="true">MC</span>
+                <div class="sidebar__text">
+                    <span class="sidebar__title">Minimalism Coach</span>
+                    <span class="sidebar__subtitle">Intentional living guide</span>
+                </div>
+            </div>
+            <nav class="sidebar__nav" aria-label="Main">
+                <a class="nav-link" href="index.html">Chat session</a>
+                <a class="nav-link active" href="assessment.html">Assessment</a>
+                <a class="nav-link" href="dashboard.html">Dashboard</a>
+            </nav>
+            <div id="userInfo" class="sidebar__profile" aria-live="polite"></div>
+            <div class="sidebar__note">
+                <h2>Build your profile</h2>
+                <p>Answer honestly so we can tailor coaching, track milestones, and recommend the next right action.</p>
+            </div>
+        </aside>
+
+        <main class="workspace workspace--padded assessment-page">
+            <div class="assessment-container">
+        <div class="header">
+            <h1>Personal Assessment</h1>
+            <p>Help us understand your lifestyle and goals to create a personalized minimalism journey</p>
+        </div>
+
+        <div class="progress-container">
+            <div class="progress-track">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+        </div>
+
+        <div class="step-content">
+            <!-- Step 1: Personal Information -->
+            <div class="step active" id="step1">
+                <div class="step-header">
+                    <h2 class="step-title">Personal Information</h2>
+                    <p class="step-subtitle">Tell us a bit about yourself so we can personalize your experience</p>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label" for="userName">Your first name</label>
+                    <input type="text" id="userName" class="form-input" placeholder="Enter your first name" required>
+                    <div class="error-message">Please enter your name</div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="userAge">Age range</label>
+                    <select id="userAge" class="form-input form-select" required>
+                        <option value="">Select your age range</option>
+                        <option value="18-25">18-25 years</option>
+                        <option value="26-35">26-35 years</option>
+                        <option value="36-45">36-45 years</option>
+                        <option value="46-55">46-55 years</option>
+                        <option value="56-65">56-65 years</option>
+                        <option value="65+">65+ years</option>
+                    </select>
+                    <div class="error-message">Please select your age range</div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="livingSpace">Current living situation</label>
+                    <select id="livingSpace" class="form-input form-select" required>
+                        <option value="">Select your living space</option>
+                        <option value="studio">Studio apartment</option>
+                        <option value="1bedroom">1-bedroom apartment</option>
+                        <option value="2bedroom">2-bedroom apartment/house</option>
+                        <option value="3bedroom">3-bedroom house</option>
+                        <option value="large-house">Large house (4+ bedrooms)</option>
+                        <option value="shared">Shared living space</option>
+                    </select>
+                    <div class="error-message">Please select your living situation</div>
+                </div>
+            </div>
+
+            <!-- Step 2: Current State -->
+            <div class="step" id="step2">
+                <div class="step-header">
+                    <h2 class="step-title">Current Lifestyle</h2>
+                    <p class="step-subtitle">Help us understand your starting point and daily life</p>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Estimated number of personal items you own</label>
+                    <p class="helper-text">Include clothes, books, electronics, kitchen items, furniture, decorations, and personal belongings</p>
+                    <div class="slider-container">
+                        <input type="range" id="currentItems" class="slider" min="100" max="2000" value="500" step="50">
+                        <div class="slider-labels">
+                            <span>100 items</span>
+                            <span>1,000 items</span>
+                            <span>2,000+ items</span>
+                        </div>
+                        <div class="slider-value" id="itemCountDisplay">500 items</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Primary lifestyle</label>
+                    <div class="options-grid">
+                        <div class="option-card" data-value="student">
+                            <input type="radio" name="lifestyle" value="student" id="lifestyle-student">
+                            <div class="option-title">Student</div>
+                            <div class="option-description">Studying, budget-conscious, frequently moving between locations</div>
+                        </div>
+                        <div class="option-card" data-value="professional">
+                            <input type="radio" name="lifestyle" value="professional" id="lifestyle-professional">
+                            <div class="option-title">Working Professional</div>
+                            <div class="option-description">Busy schedule, career-focused, stable income</div>
+                        </div>
+                        <div class="option-card" data-value="family">
+                            <input type="radio" name="lifestyle" value="family" id="lifestyle-family">
+                            <div class="option-title">Family-oriented</div>
+                            <div class="option-description">Children or dependents, shared spaces, family responsibilities</div>
+                        </div>
+                        <div class="option-card" data-value="remote">
+                            <input type="radio" name="lifestyle" value="remote" id="lifestyle-remote">
+                            <div class="option-title">Remote Worker</div>
+                            <div class="option-description">Work from home, flexible schedule, home office needs</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Areas with the most clutter (select all that apply)</label>
+                    <div class="checkbox-grid">
+                        <div class="checkbox-item" data-value="clothing">
+                            <input type="checkbox" value="clothing" id="clutter-clothing">
+                            <label class="checkbox-label" for="clutter-clothing">Clothing & Accessories</label>
+                        </div>
+                        <div class="checkbox-item" data-value="books">
+                            <input type="checkbox" value="books" id="clutter-books">
+                            <label class="checkbox-label" for="clutter-books">Books & Documents</label>
+                        </div>
+                        <div class="checkbox-item" data-value="electronics">
+                            <input type="checkbox" value="electronics" id="clutter-electronics">
+                            <label class="checkbox-label" for="clutter-electronics">Electronics & Gadgets</label>
+                        </div>
+                        <div class="checkbox-item" data-value="kitchen">
+                            <input type="checkbox" value="kitchen" id="clutter-kitchen">
+                            <label class="checkbox-label" for="clutter-kitchen">Kitchen Items</label>
+                        </div>
+                        <div class="checkbox-item" data-value="sentimental">
+                            <input type="checkbox" value="sentimental" id="clutter-sentimental">
+                            <label class="checkbox-label" for="clutter-sentimental">Sentimental Items</label>
+                        </div>
+                        <div class="checkbox-item" data-value="hobby">
+                            <input type="checkbox" value="hobby" id="clutter-hobby">
+                            <label class="checkbox-label" for="clutter-hobby">Hobby Supplies</label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 3: Motivation & Psychology -->
+            <div class="step" id="step3">
+                <div class="step-header">
+                    <h2 class="step-title">Motivation & Mindset</h2>
+                    <p class="step-subtitle">Understanding your relationship with possessions helps us provide better guidance</p>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Primary motivation for minimalism</label>
+                    <div class="options-grid">
+                        <div class="option-card" data-value="stress">
+                            <input type="radio" name="motivation" value="stress" id="motivation-stress">
+                            <div class="option-title">Reduce Stress</div>
+                            <div class="option-description">Less clutter leads to clearer thinking and reduced anxiety</div>
+                        </div>
+                        <div class="option-card" data-value="financial">
+                            <input type="radio" name="motivation" value="financial" id="motivation-financial">
+                            <div class="option-title">Financial Benefits</div>
+                            <div class="option-description">Spend less money and focus on essential purchases</div>
+                        </div>
+                        <div class="option-card" data-value="freedom">
+                            <input type="radio" name="motivation" value="freedom" id="motivation-freedom">
+                            <div class="option-title">Lifestyle Freedom</div>
+                            <div class="option-description">Travel easily, move without hassle, live flexibly</div>
+                        </div>
+                        <div class="option-card" data-value="focus">
+                            <input type="radio" name="motivation" value="focus" id="motivation-focus">
+                            <div class="option-title">Mental Clarity</div>
+                            <div class="option-description">Remove distractions to focus on what truly matters</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Decision-making approach</label>
+                    <div class="options-grid">
+                        <div class="option-card" data-value="analytical">
+                            <input type="radio" name="decision-style" value="analytical" id="decision-analytical">
+                            <div class="option-title">Analytical</div>
+                            <div class="option-description">I carefully weigh pros and cons before making decisions</div>
+                        </div>
+                        <div class="option-card" data-value="intuitive">
+                            <input type="radio" name="decision-style" value="intuitive" id="decision-intuitive">
+                            <div class="option-title">Intuitive</div>
+                            <div class="option-description">I tend to go with my gut feeling and instincts</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">How attached are you to your possessions?</label>
+                    <div class="slider-container">
+                        <input type="range" id="attachmentLevel" class="slider" min="1" max="10" value="5">
+                        <div class="slider-labels">
+                            <span>Not attached</span>
+                            <span>Moderately attached</span>
+                            <span>Very attached</span>
+                        </div>
+                        <div class="slider-value" id="attachmentDisplay">5/10</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 4: Goals & Timeline -->
+            <div class="step" id="step4">
+                <div class="step-header">
+                    <h2 class="step-title">Goals & Timeline</h2>
+                    <p class="step-subtitle">Set realistic expectations for your minimalism journey</p>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="timeframe">Preferred timeline to reach your goals</label>
+                    <select id="timeframe" class="form-input form-select" required>
+                        <option value="">Select your preferred pace</option>
+                        <option value="3-months">3 months (Intensive approach)</option>
+                        <option value="6-months">6 months (Steady progress)</option>
+                        <option value="1-year">1 year (Gradual transformation)</option>
+                        <option value="flexible">Flexible timeline (no rush)</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Anticipated challenges (select all that apply)</label>
+                    <div class="checkbox-grid">
+                        <div class="checkbox-item" data-value="sentimental">
+                            <input type="checkbox" value="sentimental" id="challenge-sentimental">
+                            <label class="checkbox-label" for="challenge-sentimental">Sentimental attachment</label>
+                        </div>
+                        <div class="checkbox-item" data-value="decisions">
+                            <input type="checkbox" value="decisions" id="challenge-decisions">
+                            <label class="checkbox-label" for="challenge-decisions">Decision paralysis</label>
+                        </div>
+                        <div class="checkbox-item" data-value="time">
+                            <input type="checkbox" value="time" id="challenge-time">
+                            <label class="checkbox-label" for="challenge-time">Limited time availability</label>
+                        </div>
+                        <div class="checkbox-item" data-value="family">
+                            <input type="checkbox" value="family" id="challenge-family">
+                            <label class="checkbox-label" for="challenge-family">Family or roommate resistance</label>
+                        </div>
+                        <div class="checkbox-item" data-value="fear">
+                            <input type="checkbox" value="fear" id="challenge-fear">
+                            <label class="checkbox-label" for="challenge-fear">Fear of needing items later</label>
+                        </div>
+                        <div class="checkbox-item" data-value="perfectionism">
+                            <input type="checkbox" value="perfectionism" id="challenge-perfectionism">
+                            <label class="checkbox-label" for="challenge-perfectionism">Perfectionism tendencies</label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 5: Completion -->
+            <div class="step" id="step5">
+                <div class="completion-screen">
+                    <div class="completion-icon">✓</div>
+                    <h2 class="completion-title">Assessment Complete</h2>
+                    <p class="completion-text">Your personalized minimalism profile has been created. We'll use this information to provide tailored guidance throughout your journey.</p>
+                    
+                    <div class="profile-summary" id="profileSummary">
+                        <div class="summary-title">Your Minimalism Profile</div>
+                        <!-- Profile summary will be populated by JavaScript -->
+                    </div>
+                    
+                    <div class="action-buttons">
+                        <a href="index.html" class="btn btn-primary btn-lg">Start Coaching Session</a>
+                        <a href="dashboard.html" class="btn btn-secondary btn-lg">View Dashboard</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="navigation">
+            <div class="step-indicator">
+                <span id="stepIndicator">Step 1 of 5</span>
+            </div>
+            <div class="nav-buttons">
+                <button class="btn btn-ghost" id="prevBtn" onclick="changeStep(-1)" disabled>Previous</button>
+                <button class="btn btn-primary" id="nextBtn" onclick="changeStep(1)">Next</button>
+            </div>
+        </div>
+      </div>
+        </main>
+    </div>
+
+    <script src="assessment.js"></script>
+</body>
+</html>

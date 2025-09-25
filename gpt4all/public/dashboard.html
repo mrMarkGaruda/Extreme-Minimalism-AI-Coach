@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard — Minimalism Coach</title>
+  <link rel="stylesheet" href="minimal-design.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Primary">
+      <div class="sidebar__brand">
+        <span class="sidebar__mark" aria-hidden="true">MC</span>
+        <div class="sidebar__text">
+          <span class="sidebar__title">Minimalism Coach</span>
+          <span class="sidebar__subtitle">Intentional living guide</span>
+        </div>
+      </div>
+      <nav class="sidebar__nav" aria-label="Main">
+        <a class="nav-link" href="index.html">Chat session</a>
+        <a class="nav-link" href="assessment.html">Assessment</a>
+        <a class="nav-link active" href="dashboard.html">Dashboard</a>
+      </nav>
+      <div id="userInfo" class="sidebar__profile" aria-live="polite"></div>
+      <div class="sidebar__note">
+        <h2>Review your wins</h2>
+        <p>Log your reductions, celebrate milestones, and export your journey for accountability partners.</p>
+      </div>
+    </aside>
+
+    <main class="workspace workspace--padded">
+      <header class="page-header">
+        <h1>Your Dashboard</h1>
+        <p>Track progress, milestones, and goals in one focused view.</p>
+      </header>
+
+      <div class="dashboard-content">
+        <section class="grid-auto">
+          <div class="stat">
+            <div class="label">Current Items</div>
+            <div id="currentItems" class="value">0</div>
+          </div>
+          <div class="stat">
+            <div class="label">Items Reduced</div>
+            <div id="itemsReduced" class="value">0</div>
+          </div>
+          <div class="stat">
+            <div class="label">Target Items</div>
+            <div id="targetItems" class="value">50</div>
+          </div>
+          <div class="stat">
+            <div class="label">Days on Journey</div>
+            <div id="daysOnJourney" class="value">0</div>
+          </div>
+        </section>
+
+        <section class="row">
+          <div class="card card--progress">
+            <div class="card__header">
+              <h3>Progress</h3>
+            </div>
+            <div class="card__content card__content--split">
+              <div class="progress-ring">
+                <svg width="200" height="200" viewBox="0 0 200 200" aria-hidden="true">
+                  <circle class="ring-bg" cx="100" cy="100" r="85" fill="none" stroke-width="16"></circle>
+                  <circle id="progressRing" class="ring-fg" cx="100" cy="100" r="85" fill="none" stroke-width="16" stroke-linecap="round" stroke-dasharray="0 999" stroke-dashoffset="0"></circle>
+                  <text x="100" y="105" class="ring-text" font-size="26" text-anchor="middle">
+                    <tspan id="progressPercentage">0%</tspan>
+                  </text>
+                </svg>
+              </div>
+              <div class="card__body">
+                <span class="meta-label">Quick actions</span>
+                <div class="button-row">
+                  <button class="btn btn-primary" onclick="addProgress()">Log progress</button>
+                  <button class="btn btn-secondary" onclick="exportProgress()">Export</button>
+                </div>
+                <p class="card__hint">Capture even small updates to keep your momentum visible.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card__header">
+              <h3>Milestones</h3>
+            </div>
+            <div id="milestonesList"></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>

@@ -3,21 +3,120 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chat Application with GPT4All</title>
-    <link rel="stylesheet" href="styles.css">
-    <link rel="stylesheet" href="node_modules/prismjs/themes/prism.css"> <!-- Include PrismJS CSS -->
+    <title>Minimalism Coach — AI-Powered Intentional Living</title>
+    <link rel="stylesheet" href="minimal-design.css">
 </head>
 <body>
-<div id="chat-container">
-    <div id="chat-messages"></div>
-    <form id="chat-form">
-        <input type="text" id="chat-input" autocomplete="off" />
-        <button type="submit">Send</button>
-    </form>
-</div>
-<script src="/socket.io/socket.io.js"></script>
-<script src="node_modules/prismjs/prism.js"></script> <!-- Include PrismJS JavaScript -->
-<script src="script.js"></script>
+    <div class="chat-app">
+        <aside class="sidebar" aria-label="Primary">
+            <div class="sidebar__brand">
+                <span class="sidebar__mark" aria-hidden="true">MC</span>
+                <div class="sidebar__text">
+                    <span class="sidebar__title">Minimalism Coach</span>
+                    <span class="sidebar__subtitle">Intentional living guide</span>
+                </div>
+            </div>
+            <nav class="sidebar__nav" aria-label="Main">
+                <a class="nav-link active" href="index.html">Chat session</a>
+                <a class="nav-link" href="assessment.html">Assessment</a>
+                <a class="nav-link" href="dashboard.html">Dashboard</a>
+            </nav>
+            <div id="userInfo" class="sidebar__profile" aria-live="polite"></div>
+            <div class="sidebar__note">
+                <h2>Stay intentional</h2>
+                <p>Use the coaching feed to plan your next step, ask for accountability, or get a tailored declutter game plan.</p>
+            </div>
+        </aside>
+
+        <main class="workspace" aria-live="polite">
+            <header class="chat-topbar">
+                <div class="chat-topbar__details">
+                    <h1 class="chat-topbar__title">Coaching session</h1>
+                    <div class="status-chip" role="status" aria-label="Coach online">
+                        <span class="status-chip__dot" aria-hidden="true"></span>
+                        <span>Coach online</span>
+                    </div>
+                </div>
+                <div class="chat-topbar__actions">
+                    <button id="suggestions-toggle-button" type="button" class="chip-button" aria-expanded="false" aria-controls="suggestion-container">Suggested prompts</button>
+                    <button id="modeToggle" type="button" class="chip-button" aria-expanded="false" aria-controls="chatModes">Focus modes</button>
+                    <button id="searchToggle" type="button" class="icon-button" aria-controls="searchPanel">Search</button>
+                    <button id="clear-history-button" type="button" class="icon-button">Clear</button>
+                    <button id="emergencySupport" type="button" class="danger-button">Emergency support</button>
+                </div>
+            </header>
+
+            <section id="chatModes" class="chat-modes" aria-label="Focus modes" hidden>
+                <button type="button" class="mode-pill mode-btn active" data-mode="general" aria-pressed="true">General</button>
+                <button type="button" class="mode-pill mode-btn" data-mode="assessment" aria-pressed="false">Assessment</button>
+                <button type="button" class="mode-pill mode-btn" data-mode="decision" aria-pressed="false">Decision support</button>
+                <button type="button" class="mode-pill mode-btn" data-mode="emergency" aria-pressed="false">Emergency calm</button>
+            </section>
+
+            <section class="chat-main" aria-label="Conversation">
+                <div id="chat-area" class="chat-stream">
+                    <div id="emptyState" class="empty-state" role="presentation">
+                        <h2>Start a conversation</h2>
+                        <p>Share where you are in your minimalism journey or ask for your next focused action.</p>
+                        <ul>
+                            <li>Review progress and set a weekly target</li>
+                            <li>Request a 10 minute declutter sprint</li>
+                            <li>Work through a sentimental decision</li>
+                        </ul>
+                    </div>
+                    <div id="chat-messages" class="message-list" aria-live="polite"></div>
+                    <div id="typingIndicator" class="typing-row" aria-live="polite" aria-hidden="true">
+                        <span class="typing-label">Coach is typing</span>
+                        <span class="typing-dots" aria-hidden="true">
+                            <span></span>
+                            <span></span>
+                            <span></span>
+                        </span>
+                    </div>
+                </div>
+
+                <div id="suggestion-container" class="suggestion-panel" aria-label="Suggested prompts"></div>
+
+                <button id="jumpToLatest" type="button" class="jump-button" aria-label="Jump to latest">
+                    <span aria-hidden="true">↓</span>
+                </button>
+            </section>
+
+            <footer class="chat-input-bar">
+                <form id="chat-form" class="chat-form" autocomplete="off">
+                    <textarea id="messageInput" class="chat-textarea" placeholder="Ask for guidance, report progress, or describe a challenge..." rows="1"></textarea>
+                    <div class="input-actions">
+                        <button id="sendButton" type="submit" class="primary-button" disabled>Send</button>
+                    </div>
+                </form>
+            </footer>
+        </main>
+    </div>
+
+    <aside id="searchPanel" class="search-panel" role="dialog" aria-modal="true" aria-hidden="true">
+        <div class="search-panel__inner">
+            <header class="search-panel__header">
+                <h2>Search conversation</h2>
+                <button id="closeSearchPanel" type="button" class="icon-button">Close</button>
+            </header>
+            <div class="search-panel__body">
+                <input id="searchInput" type="search" placeholder="Search keywords or topics..." autocomplete="off" />
+                <div id="searchResults" class="search-results" role="list"></div>
+            </div>
+        </div>
+    </aside>
+    <div id="searchPanelBackdrop" class="search-backdrop" hidden></div>
+
+    <div id="milestoneCelebration" class="celebration" hidden>
+        <div class="celebration__content" role="alertdialog" aria-modal="true">
+            <div class="celebration__icon" aria-hidden="true">🎉</div>
+            <p id="celebrationMessage" class="celebration__message">Congratulations!</p>
+            <button type="button" class="primary-button" onclick="closeCelebration()">Keep going</button>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="enhanced-chat.js"></script>
 </body>
 </html>
 
