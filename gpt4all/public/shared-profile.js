@@ -1,19 +1,16 @@
 (function () {
-    const PROFILE_KEY = 'minimalism_user_profile';
-    const PROGRESS_KEY = 'minimalism_progress';
-
     let cachedSnapshot = null;
+    let cachedVault = null;
 
-    function readJson(key) {
-        if (typeof localStorage === 'undefined') return null;
-        try {
-            const raw = localStorage.getItem(key);
-            if (!raw) return null;
-            return JSON.parse(raw);
-        } catch (error) {
-            console.warn(`[ProfileStore] Failed to parse ${key}:`, error);
-            return null;
+    function getVault() {
+        if (window.Auth) {
+            const vault = window.Auth.getVault();
+            if (vault) {
+                cachedVault = vault;
+                return vault;
+            }
         }
+        return cachedVault;
     }
 
     function toNumber(value) {
@@ -98,9 +95,10 @@
         return Math.max(0, Math.min(100, percent));
     }
 
-    function computeSnapshot() {
-        const profile = readJson(PROFILE_KEY);
-        const progress = readJson(PROGRESS_KEY);
+    function computeSnapshot(vaultOverride) {
+        const vault = vaultOverride || getVault();
+        const profile = vault?.profile || null;
+        const progress = vault?.progress || null;
 
         const currentItems = resolveCurrentItems(progress, profile);
         const startItems = resolveStartItems(progress, profile, currentItems);
@@ -127,11 +125,13 @@
             }
         };
 
-        return {
+        const snapshot = {
             profile,
             progress,
             computed
         };
+        cachedSnapshot = snapshot;
+        return snapshot;
     }
 
     function getSnapshot(options = {}) {
@@ -199,17 +199,27 @@
         return snapshot;
     }
 
-    function setProfile(profile) {
-        if (typeof localStorage === 'undefined') return getSnapshot();
-        localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
-        cachedSnapshot = null;
+    async function setProfile(profile) {
+        if (!window.Auth) {
+            throw new Error('Auth is not ready');
+        }
+        const updatedVault = await window.Auth.updateVault((vault) => {
+            vault.profile = profile;
+            return vault;
+        });
+        cachedVault = updatedVault;
         return getSnapshot({ force: true });
     }
 
-    function setProgress(progress) {
-        if (typeof localStorage === 'undefined') return getSnapshot();
-        localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress));
-        cachedSnapshot = null;
+    async function setProgress(progress) {
+        if (!window.Auth) {
+            throw new Error('Auth is not ready');
+        }
+        const updatedVault = await window.Auth.updateVault((vault) => {
+            vault.progress = progress;
+            return vault;
+        });
+        cachedVault = updatedVault;
         return getSnapshot({ force: true });
     }
 
@@ -222,4 +232,17 @@
         formatTimeframeShort,
         formatNumber
     };
+
+    document.addEventListener('vault:updated', (event) => {
+        if (!event?.detail?.vault) return;
+        cachedVault = event.detail.vault;
+        computeSnapshot(cachedVault);
+    });
+
+    if (window.Auth && typeof window.Auth.onReady === 'function') {
+        window.Auth.onReady(() => {
+            cachedVault = window.Auth.getVault();
+            computeSnapshot(cachedVault);
+        });
+    }
 })();

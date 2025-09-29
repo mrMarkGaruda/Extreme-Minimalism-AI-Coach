@@ -1,6 +1,15 @@
 import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
+import session from 'express-session';
+import rateLimit from 'express-rate-limit';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import fs from 'fs/promises';
+import path from 'path';
+import { promisify } from 'util';
+import { fileURLToPath } from 'url';
 import { createCompletionStream, loadModel } from 'gpt4all';
 import { MINIMALISM_COACH_PROMPT } from './prompts/minimalism-coach.js';
 import { ASSESSMENT_PROMPT } from './prompts/assessment-coach.js';
@@ -8,12 +17,401 @@ import { DECISION_SUPPORT_PROMPT } from './prompts/decision-support-coach.js';
 
 const localModelPath = 'orca-mini-3b-gguf2-q4_0.gguf';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DATA_DIR = path.join(__dirname, 'data');
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const USER_VAULT_DIR = path.join(DATA_DIR, 'vaults');
+
+const PBKDF2_ITERATIONS = Number(process.env.PBKDF2_ITERATIONS || 120_000);
+const KEY_LENGTH = 32;
+const ENCRYPTION_ALGORITHM = 'aes-256-gcm';
+const MAX_VAULT_SIZE_BYTES = Number(process.env.MAX_VAULT_SIZE_BYTES || 512_000);
+
+const pbkdf2Async = promisify(crypto.pbkdf2);
+
+const JWT_SECRET = process.env.JWT_SECRET || 'replace-me-with-secure-secret';
+if (!process.env.JWT_SECRET) {
+    console.warn('[Auth] JWT_SECRET not set. Using fallback development secret.');
+}
+
+const SESSION_SECRET = process.env.SESSION_SECRET || JWT_SECRET;
+const TOKEN_EXPIRATION = process.env.JWT_EXPIRES_IN || '1h';
+const TOKEN_AUDIENCE = 'minimalism-app';
+const TOKEN_ISSUER = 'extreme-minimalism-ai-coach';
+
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
+    .split(',')
+    .map(email => email.trim().toLowerCase())
+    .filter(Boolean);
+
+const DEFAULT_ROLE = 'user';
+
+const revokedTokens = new Map();
+
+await fs.mkdir(DATA_DIR, { recursive: true });
+await fs.mkdir(USER_VAULT_DIR, { recursive: true });
+
+const chatLimiter = rateLimit({
+    windowMs: Number(process.env.CHAT_RATE_WINDOW_MS || 60_000),
+    max: Number(process.env.CHAT_RATE_LIMIT || 45),
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    message: {
+        error: 'Too many requests. Please slow down before sending another message.'
+    }
+});
+
+async function readUsersFromDisk() {
+    try {
+        const data = await fs.readFile(USERS_FILE, 'utf8');
+        const parsed = JSON.parse(data);
+        if (!Array.isArray(parsed)) {
+            return [];
+        }
+        return parsed.map(user => ({
+            ...user,
+            role: user.role || DEFAULT_ROLE
+        }));
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            await fs.writeFile(USERS_FILE, '[]', 'utf8');
+            return [];
+        }
+        throw error;
+    }
+}
+
+async function writeUsersToDisk(users) {
+    await fs.writeFile(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
+}
+
+function sanitizeUser(user) {
+    if (!user) return null;
+    const { passwordHash, encryptionSalt, ...safe } = user;
+    safe.role = user.role || DEFAULT_ROLE;
+    if (safe.profile && Object.keys(safe.profile).length === 0) {
+        delete safe.profile;
+    }
+    return safe;
+}
+
+async function findUserById(userId) {
+    const users = await readUsersFromDisk();
+    return users.find(user => user.id === userId) || null;
+}
+
+async function deriveEncryptionKey(password, saltBase64) {
+    if (typeof password !== 'string' || !password) {
+        throw new Error('Password is required to derive encryption key');
+    }
+    const salt = Buffer.from(saltBase64, 'base64');
+    if (salt.length === 0) {
+        throw new Error('Invalid encryption salt');
+    }
+    return pbkdf2Async(password, salt, PBKDF2_ITERATIONS, KEY_LENGTH, 'sha256');
+}
+
+function createDefaultVault(userId, displayName = '') {
+    const now = new Date().toISOString();
+    const profile = displayName
+        ? {
+            userId,
+            name: displayName,
+            createdAt: now,
+            updatedAt: now,
+            phase: 'initial',
+            motivation: 'simplicity'
+        }
+        : null;
+
+    return {
+        profile,
+        progress: {
+            userId,
+            milestones: [],
+            currentPhase: 'initial',
+            startDate: now,
+            lastUpdate: null,
+            currentItemCount: null,
+            targetItemCount: 50
+        },
+        goals: [],
+        decisions: [],
+        stories: [],
+        conversationHistory: []
+    };
+}
+
+function encryptVault(key, data) {
+    const serialized = JSON.stringify(data);
+    const payloadSize = Buffer.byteLength(serialized, 'utf8');
+    if (payloadSize > MAX_VAULT_SIZE_BYTES) {
+        throw new Error(`Vault size ${payloadSize} exceeds limit of ${MAX_VAULT_SIZE_BYTES} bytes`);
+    }
+
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv(ENCRYPTION_ALGORITHM, key, iv);
+    const ciphertext = Buffer.concat([
+        cipher.update(serialized, 'utf8'),
+        cipher.final()
+    ]);
+    const authTag = cipher.getAuthTag();
+
+    return {
+        version: 1,
+        algorithm: ENCRYPTION_ALGORITHM,
+        iv: iv.toString('base64'),
+        authTag: authTag.toString('base64'),
+        ciphertext: ciphertext.toString('base64'),
+        updatedAt: new Date().toISOString(),
+        iterations: PBKDF2_ITERATIONS
+    };
+}
+
+function decryptVault(key, payload) {
+    if (!payload || !payload.ciphertext) {
+        return null;
+    }
+
+    const iv = Buffer.from(payload.iv, 'base64');
+    const authTag = Buffer.from(payload.authTag, 'base64');
+    const ciphertext = Buffer.from(payload.ciphertext, 'base64');
+
+    const decipher = crypto.createDecipheriv(ENCRYPTION_ALGORITHM, key, iv);
+    decipher.setAuthTag(authTag);
+
+    const decrypted = Buffer.concat([
+        decipher.update(ciphertext),
+        decipher.final()
+    ]);
+
+    return JSON.parse(decrypted.toString('utf8'));
+}
+
+async function readUserVault(userId) {
+    const filePath = path.join(USER_VAULT_DIR, `${userId}.json`);
+    try {
+        const data = await fs.readFile(filePath, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            return null;
+        }
+        throw error;
+    }
+}
+
+async function writeUserVault(userId, payload) {
+    const filePath = path.join(USER_VAULT_DIR, `${userId}.json`);
+    await fs.writeFile(filePath, JSON.stringify(payload, null, 2), 'utf8');
+}
+
+async function loadVault(userId, key) {
+    const encrypted = await readUserVault(userId);
+    if (!encrypted) {
+        return null;
+    }
+    return decryptVault(key, encrypted);
+}
+
+async function ensureVault(user, key, displayName = '') {
+    let vault = null;
+    try {
+        vault = await loadVault(user.id, key);
+    } catch (error) {
+        console.warn('[Vault] Failed to decrypt existing vault. Reinitializing.', error.message);
+    }
+
+    if (!vault) {
+        vault = createDefaultVault(user.id, displayName);
+        const encrypted = encryptVault(key, vault);
+        await writeUserVault(user.id, encrypted);
+    }
+
+    return vault;
+}
+
+function getEncryptionKeyFromSession(req) {
+    const base64Key = req.session?.encryptionKey;
+    if (!base64Key) return null;
+    try {
+        const key = Buffer.from(base64Key, 'base64');
+        return key.length === KEY_LENGTH ? key : null;
+    } catch {
+        return null;
+    }
+}
+
+async function saveVaultForUser(userId, key, vault) {
+    const encrypted = encryptVault(key, vault);
+    await writeUserVault(userId, encrypted);
+}
+
+async function loadVaultForRequest(req) {
+    const key = getEncryptionKeyFromSession(req);
+    if (!key) {
+        throw new Error('No encryption key available in session');
+    }
+
+    const userId = req.user?.id;
+    if (!userId) {
+        throw new Error('Authenticated user id not found');
+    }
+
+    let vault = null;
+    try {
+        vault = await loadVault(userId, key);
+    } catch (error) {
+        console.warn('[Vault] Failed to load vault for request:', error.message);
+    }
+
+    if (!vault) {
+        vault = createDefaultVault(userId);
+        await saveVaultForUser(userId, key, vault);
+    }
+
+    return { vault, key };
+}
+
+function determineRoleForEmail(email, existingUsersCount) {
+    if (ADMIN_EMAILS.includes(email)) {
+        return 'admin';
+    }
+    if (existingUsersCount === 0 && !ADMIN_EMAILS.length) {
+        return 'admin';
+    }
+    return DEFAULT_ROLE;
+}
+
+function createJwtToken(user) {
+    return jwt.sign(
+        { sub: user.id, email: user.email, role: user.role || DEFAULT_ROLE },
+        JWT_SECRET,
+        {
+            expiresIn: TOKEN_EXPIRATION,
+            audience: TOKEN_AUDIENCE,
+            issuer: TOKEN_ISSUER
+        }
+    );
+}
+
+function pruneRevokedTokens() {
+    if (revokedTokens.size === 0) return;
+    const now = Date.now();
+    for (const [token, expiry] of revokedTokens.entries()) {
+        if (expiry <= now) {
+            revokedTokens.delete(token);
+        }
+    }
+}
+
+function revokeToken(token) {
+    if (!token) return;
+    const decoded = jwt.decode(token);
+    const expiry = decoded?.exp ? decoded.exp * 1000 : Date.now() + 1000 * 60 * 60;
+    revokedTokens.set(token, expiry);
+}
+
+function getAuthToken(req) {
+    const header = req.headers.authorization || '';
+    if (header.startsWith('Bearer ')) {
+        return header.slice(7).trim();
+    }
+    if (req.session?.jwt) {
+        return req.session.jwt;
+    }
+    return null;
+}
+
+function authenticateRequest(req, res, next) {
+    try {
+        const token = getAuthToken(req);
+        if (!token) {
+            return res.status(401).json({ error: 'Authentication required' });
+        }
+
+        pruneRevokedTokens();
+        if (revokedTokens.has(token)) {
+            return res.status(401).json({ error: 'Session has been revoked. Please log in again.' });
+        }
+
+        const payload = jwt.verify(token, JWT_SECRET, {
+            audience: TOKEN_AUDIENCE,
+            issuer: TOKEN_ISSUER
+        });
+
+        req.user = { id: payload.sub, email: payload.email, role: payload.role || DEFAULT_ROLE };
+        req.token = token;
+        return next();
+    } catch (error) {
+        console.error('[Auth] Authentication failed:', error.message);
+        return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+}
+
+function attachUserIfPresent(req, _res, next) {
+    try {
+        const token = getAuthToken(req);
+        if (!token) {
+            return next();
+        }
+
+        pruneRevokedTokens();
+        if (revokedTokens.has(token)) {
+            req.session?.destroy?.(() => {});
+            return next();
+        }
+
+        const payload = jwt.verify(token, JWT_SECRET, {
+            audience: TOKEN_AUDIENCE,
+            issuer: TOKEN_ISSUER
+        });
+
+        req.user = { id: payload.sub, email: payload.email, role: payload.role || DEFAULT_ROLE };
+        req.token = token;
+    } catch (error) {
+        console.warn('[Auth] Optional authentication skipped:', error.message);
+        if (req.session) {
+            req.session.jwt = undefined;
+            req.session.userId = undefined;
+            req.session.userRole = undefined;
+        }
+    } finally {
+        next();
+    }
+}
+
+function authorizeRoles(...roles) {
+    const allowed = roles.map(role => role.toLowerCase());
+    return (req, res, next) => {
+        const currentRole = (req.user?.role || DEFAULT_ROLE).toLowerCase();
+        if (!allowed.includes(currentRole)) {
+            return res.status(403).json({ error: 'Insufficient permissions for this action.' });
+        }
+        return next();
+    };
+}
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
 // Middleware for parsing JSON requests
+app.set('trust proxy', 1);
 app.use(express.json());
+app.use(session({
+    name: 'minimalism.sid',
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 1000 * 60 * 60 // 1 hour
+    }
+}));
 app.use(express.static('public'));
 
 let model;
@@ -336,14 +734,253 @@ try {
 // REST API ENDPOINTS
 // ===========================================
 
-// Enhanced Chat API with context awareness
-app.post('/api/chat', async (req, res) => {
+app.post('/api/register', async (req, res) => {
     try {
-        const { message, userId = 'anonymous', context = null, profile, progress, goals, recentChat, computed = null, mode = 'general' } = req.body;
-        console.log(`[API] /api/chat called by ${userId}. Message length: ${message ? message.length : 0}`);
+        const { email, password, name } = req.body || {};
+        const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+        const trimmedName = typeof name === 'string' ? name.trim() : '';
 
-        if (!message) {
+        if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+            return res.status(400).json({ error: 'A valid email address is required.' });
+        }
+
+        if (typeof password !== 'string' || password.length < 8) {
+            return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
+        }
+
+        const users = await readUsersFromDisk();
+        if (users.some(user => user.email === normalizedEmail)) {
+            return res.status(409).json({ error: 'An account with this email already exists.' });
+        }
+
+        const passwordHash = await bcrypt.hash(password, 12);
+        const encryptionSalt = crypto.randomBytes(16).toString('base64');
+        const encryptionKey = await deriveEncryptionKey(password, encryptionSalt);
+        const role = determineRoleForEmail(normalizedEmail, users.length);
+        const newUser = {
+            id: crypto.randomUUID(),
+            email: normalizedEmail,
+            passwordHash,
+            createdAt: new Date().toISOString(),
+            profile: trimmedName ? { name: trimmedName } : {},
+            role,
+            encryptionSalt
+        };
+
+        users.push(newUser);
+        await writeUsersToDisk(users);
+
+        const vault = await ensureVault(newUser, encryptionKey, trimmedName);
+        if (vault.profile) {
+            userProfiles.set(newUser.id, vault.profile);
+        }
+        if (vault.progress) {
+            userProgress.set(newUser.id, vault.progress);
+        }
+
+        const token = createJwtToken(newUser);
+        req.session.jwt = token;
+        req.session.userId = newUser.id;
+        req.session.userRole = newUser.role;
+        req.session.encryptionKey = encryptionKey.toString('base64');
+
+        res.status(201).json({
+            token,
+            user: sanitizeUser(newUser),
+            vault
+        });
+    } catch (error) {
+        console.error('[Auth] Registration failed:', error);
+        res.status(500).json({ error: 'Unable to register user at this time.' });
+    }
+});
+
+app.post('/api/login', async (req, res) => {
+    try {
+        const { email, password } = req.body || {};
+        const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+
+        if (!normalizedEmail || typeof password !== 'string') {
+            return res.status(400).json({ error: 'Email and password are required.' });
+        }
+
+        const users = await readUsersFromDisk();
+        const userIndex = users.findIndex(user => user.email === normalizedEmail);
+
+        if (userIndex === -1) {
+            return res.status(401).json({ error: 'Invalid credentials.' });
+        }
+
+        const user = users[userIndex];
+        const passwordMatches = await bcrypt.compare(password, user.passwordHash);
+        if (!passwordMatches) {
+            return res.status(401).json({ error: 'Invalid credentials.' });
+        }
+
+        let { encryptionSalt } = user;
+        let userRecordNeedsUpdate = false;
+        if (!encryptionSalt) {
+            encryptionSalt = crypto.randomBytes(16).toString('base64');
+            user.encryptionSalt = encryptionSalt;
+            userRecordNeedsUpdate = true;
+        }
+
+        const encryptionKey = await deriveEncryptionKey(password, encryptionSalt);
+        const vault = await ensureVault(user, encryptionKey, user.profile?.name || '');
+
+        if (vault.profile) {
+            userProfiles.set(user.id, vault.profile);
+        }
+        if (vault.progress) {
+            userProgress.set(user.id, vault.progress);
+        }
+
+        const updatedUser = {
+            ...user,
+            lastLoginAt: new Date().toISOString(),
+            role: user.role || DEFAULT_ROLE
+        };
+
+        users[userIndex] = updatedUser;
+        await writeUsersToDisk(users);
+
+        const token = createJwtToken(updatedUser);
+        req.session.jwt = token;
+        req.session.userId = updatedUser.id;
+        req.session.userRole = updatedUser.role;
+        req.session.encryptionKey = encryptionKey.toString('base64');
+
+        res.json({
+            token,
+            user: sanitizeUser(updatedUser),
+            vault
+        });
+    } catch (error) {
+        console.error('[Auth] Login failed:', error);
+        res.status(500).json({ error: 'Unable to log in at this time.' });
+    }
+});
+
+app.post('/api/logout', authenticateRequest, (req, res) => {
+    const token = req.token || getAuthToken(req);
+    revokeToken(token);
+
+    if (!req.session) {
+        return res.json({ success: true });
+    }
+
+    req.session.userRole = undefined;
+    req.session.encryptionKey = undefined;
+
+    req.session.destroy(err => {
+        if (err) {
+            console.error('[Auth] Session destruction failed:', err);
+            return res.status(500).json({ error: 'Unable to log out at this time.' });
+        }
+        res.clearCookie('minimalism.sid', {
+            httpOnly: true,
+            sameSite: 'lax',
+            secure: process.env.NODE_ENV === 'production'
+        });
+        return res.json({ success: true });
+    });
+});
+
+app.get('/api/account/me', authenticateRequest, async (req, res) => {
+    try {
+        const user = await findUserById(req.user.id);
+        if (!user) {
+            return res.status(404).json({ error: 'Account not found.' });
+        }
+
+        const { vault } = await loadVaultForRequest(req);
+        res.json({
+            user: sanitizeUser(user),
+            vault
+        });
+    } catch (error) {
+        console.error('[Account] Failed to load account:', error);
+        if (error.message?.includes('encryption key')) {
+            return res.status(401).json({ error: 'Please log in again to unlock your account data.' });
+        }
+        res.status(500).json({ error: 'Unable to load account.' });
+    }
+});
+
+app.get('/api/account/vault', authenticateRequest, async (req, res) => {
+    try {
+        const { vault } = await loadVaultForRequest(req);
+        res.json({ vault });
+    } catch (error) {
+        console.error('[Account] Vault retrieval failed:', error);
+        const status = error.message?.includes('encryption key') ? 401 : 500;
+        res.status(status).json({ error: status === 401 ? 'Re-authentication required.' : 'Unable to load vault data.' });
+    }
+});
+
+app.put('/api/account/vault', authenticateRequest, async (req, res) => {
+    try {
+        const payload = req.body?.vault;
+        if (!payload || typeof payload !== 'object') {
+            return res.status(400).json({ error: 'Vault payload is required.' });
+        }
+
+        const { key } = await loadVaultForRequest(req);
+        await saveVaultForUser(req.user.id, key, payload);
+
+        if (payload.profile) {
+            userProfiles.set(req.user.id, payload.profile);
+        } else {
+            userProfiles.delete(req.user.id);
+        }
+
+        if (payload.progress) {
+            userProgress.set(req.user.id, payload.progress);
+        } else {
+            userProgress.delete(req.user.id);
+        }
+
+        res.json({ success: true });
+    } catch (error) {
+        console.error('[Account] Vault save failed:', error);
+        const status = error.message?.includes('encryption key') ? 401 : 500;
+        res.status(status).json({ error: status === 401 ? 'Re-authentication required.' : 'Unable to save vault data.' });
+    }
+});
+
+app.post('/api/account/export', authenticateRequest, async (req, res) => {
+    try {
+        const { vault } = await loadVaultForRequest(req);
+        const exportPayload = {
+            generatedAt: new Date().toISOString(),
+            user: sanitizeUser(await findUserById(req.user.id)),
+            vault
+        };
+
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Content-Disposition', 'attachment; filename="minimalism-export.json"');
+        res.send(JSON.stringify(exportPayload, null, 2));
+    } catch (error) {
+        console.error('[Account] Export failed:', error);
+        const status = error.message?.includes('encryption key') ? 401 : 500;
+        res.status(status).json({ error: status === 401 ? 'Re-authentication required.' : 'Unable to export data.' });
+    }
+});
+
+// Enhanced Chat API with context awareness
+app.post('/api/chat', chatLimiter, attachUserIfPresent, async (req, res) => {
+    try {
+    const { message, userId: requestUserId = 'anonymous', context = null, profile, progress, goals, recentChat, computed = null, mode = 'general' } = req.body;
+    const resolvedUserId = req.user?.id || requestUserId || 'anonymous';
+        const messageText = typeof message === 'string' ? message.trim() : '';
+        console.log(`[API] /api/chat called by ${resolvedUserId}. Message length: ${messageText.length}`);
+
+        if (!messageText) {
             return res.status(400).json({ error: 'Message is required' });
+        }
+
+        if (messageText.length > 2000) {
+            return res.status(400).json({ error: 'Message is too long. Please keep requests under 2000 characters.' });
         }
 
         if (!model) {
@@ -351,11 +988,11 @@ app.post('/api/chat', async (req, res) => {
         }
 
         // Get or create user session
-        const sessionKey = userId;
+    const sessionKey = resolvedUserId;
         const session = userSessions.get(sessionKey) || { exchanges: [] };
 
-        const approach = determineCoachingApproach(message, { mode, profile, computed });
-        const emotionalSnapshot = detectEmotionalState(message);
+        const approach = determineCoachingApproach(messageText, { mode, profile, computed });
+        const emotionalSnapshot = detectEmotionalState(messageText);
         const approachDirective = getApproachDirective(approach, emotionalSnapshot.state);
 
         // Build context object
@@ -377,7 +1014,7 @@ app.post('/api/chat', async (req, res) => {
         };
 
         const promptTemplate = getContextualPrompt(mode, contextObj);
-        const coachingPrompt = buildOptimizedPrompt(message, contextObj, promptTemplate);
+    const coachingPrompt = buildOptimizedPrompt(messageText, contextObj, promptTemplate);
         const generationSettings = getGenerationSettings(mode, approach, emotionalSnapshot.state, emotionalSnapshot.crisis);
 
         // Generate response with streaming for speed
@@ -397,7 +1034,7 @@ app.post('/api/chat', async (req, res) => {
         fullResponse = fullResponse.trim();
 
         // Update session context
-        updateSessionContext(sessionKey, message, fullResponse);
+        updateSessionContext(sessionKey, messageText, fullResponse);
 
         console.log(`[API] /api/chat response ready. Bytes: ${fullResponse.length}`);
         res.json({
@@ -416,40 +1053,46 @@ app.post('/api/chat', async (req, res) => {
 });
 
 // User Assessment API for profiling
-app.post('/api/assessment', async (req, res) => {
+app.post('/api/assessment', authenticateRequest, async (req, res) => {
     try {
-        const { currentItems, lifestyle, motivation, challenges, userId = 'anonymous' } = req.body;
-        console.log(`[API] /api/assessment by ${userId}. currentItems=${currentItems}`);
+        const { currentItems, lifestyle, motivation, challenges } = req.body || {};
+        const resolvedUserId = req.user.id;
+        const parsedCurrentItems = Number(currentItems);
+        console.log(`[API] /api/assessment by ${resolvedUserId}. currentItems=${parsedCurrentItems}`);
 
-        if (!currentItems) {
-            return res.status(400).json({ error: 'currentItems count is required' });
+        if (!Number.isFinite(parsedCurrentItems) || parsedCurrentItems <= 0) {
+            return res.status(400).json({ error: 'currentItems must be a positive number.' });
         }
+
+        const challengeList = Array.isArray(challenges)
+            ? challenges.slice(0, 10).map(item => String(item).trim()).filter(Boolean)
+            : [];
 
         // Determine phase based on current items
         let phase, recommendations = [];
         
-        if (currentItems > 500) {
+        if (parsedCurrentItems > 500) {
             phase = 'initial';
             recommendations = [
                 'Start with obvious duplicates (multiple phone chargers, excess clothing)',
                 'Focus on expired or broken items first',
                 'Tackle one room at a time to avoid overwhelm'
             ];
-        } else if (currentItems > 200) {
+        } else if (parsedCurrentItems > 200) {
             phase = 'reduction';
             recommendations = [
                 'Apply the "one year rule" - if unused for a year, consider removing',
                 'Look for multi-use alternatives (phone as camera, clock, etc.)',
                 'Focus on emotional attachments - address the psychology behind keeping items'
             ];
-        } else if (currentItems > 100) {
+        } else if (parsedCurrentItems > 100) {
             phase = 'refinement';
             recommendations = [
                 'Evaluate each item\'s frequency of use and emotional value',
                 'Consider quality over quantity for remaining items',
                 'Start thinking about your ideal 50-item list'
             ];
-        } else if (currentItems > 50) {
+        } else if (parsedCurrentItems > 50) {
             phase = 'optimization';
             recommendations = [
                 'Make hard choices about sentimental items',
@@ -466,26 +1109,55 @@ app.post('/api/assessment', async (req, res) => {
         }
 
         // Create user profile
+        const now = new Date().toISOString();
         const profile = {
-            userId,
-            currentItems,
+            userId: resolvedUserId,
+            currentItems: parsedCurrentItems,
             lifestyle: lifestyle || 'standard',
             motivation: motivation || 'simplicity',
-            challenges: challenges || [],
+            challenges: challengeList,
             phase,
-            assessmentDate: new Date().toISOString(),
-            targetItems: phase === 'maintenance' ? 50 : Math.max(50, Math.floor(currentItems * 0.6))
+            assessmentDate: now,
+            targetItems: phase === 'maintenance' ? 50 : Math.max(50, Math.floor(parsedCurrentItems * 0.6))
         };
 
-        // Store profile
-        userProfiles.set(userId, profile);
+        const { vault, key } = await loadVaultForRequest(req);
+        const existingProfile = vault.profile || {};
+        vault.profile = {
+            ...existingProfile,
+            ...profile,
+            name: existingProfile.name || profile.name,
+            updatedAt: now
+        };
+
+        if (!vault.progress || typeof vault.progress !== 'object') {
+            vault.progress = {
+                userId: resolvedUserId,
+                milestones: [],
+                currentPhase: phase,
+                startDate: now,
+                lastUpdate: now,
+                currentItemCount: parsedCurrentItems,
+                targetItemCount: profile.targetItems
+            };
+        }
+
+        vault.progress.currentPhase = phase;
+        vault.progress.currentItemCount = parsedCurrentItems;
+        vault.progress.targetItemCount = profile.targetItems;
+        vault.progress.lastUpdate = now;
+
+        await saveVaultForUser(resolvedUserId, key, vault);
+
+        userProfiles.set(resolvedUserId, vault.profile);
+        userProgress.set(resolvedUserId, vault.progress);
 
         res.json({
-            profile,
+            profile: vault.profile,
             recommendations,
             phase,
             nextSteps: recommendations.slice(0, 3),
-            estimatedTimeframe: getEstimatedTimeframe(currentItems, phase)
+            estimatedTimeframe: getEstimatedTimeframe(parsedCurrentItems, phase)
         });
 
     } catch (error) {
@@ -495,78 +1167,134 @@ app.post('/api/assessment', async (req, res) => {
 });
 
 // Progress Tracking API
-app.get('/api/progress/:userId?', (req, res) => {
+app.get('/api/progress', authenticateRequest, async (req, res) => {
     try {
-        const userId = req.params.userId || 'anonymous';
-        console.log(`[API] GET /api/progress for ${userId}`);
-        const progress = userProgress.get(userId) || {
-            userId,
+        console.log(`[API] GET /api/progress for ${req.user.id}`);
+        const { vault } = await loadVaultForRequest(req);
+        const progress = vault.progress || {
+            userId: req.user.id,
             milestones: [],
             currentPhase: 'initial',
             startDate: new Date().toISOString(),
-            lastUpdate: new Date().toISOString()
+            lastUpdate: null,
+            currentItemCount: null,
+            targetItemCount: 50
         };
 
+        userProgress.set(req.user.id, progress);
         res.json(progress);
     } catch (error) {
         console.error('Progress GET error:', error);
-        res.status(500).json({ error: 'Failed to retrieve progress' });
+        const status = error.message?.includes('encryption key') ? 401 : 500;
+        res.status(status).json({ error: status === 401 ? 'Re-authentication required.' : 'Failed to retrieve progress' });
     }
 });
 
-app.post('/api/progress', (req, res) => {
+app.post('/api/progress', authenticateRequest, async (req, res) => {
     try {
-        const { userId = 'anonymous', itemCount, milestone, notes } = req.body;
-        console.log(`[API] POST /api/progress by ${userId}. itemCount=${itemCount}`);
+        const { itemCount, milestone, notes } = req.body || {};
+        const userId = req.user.id;
+        const parsedItemCount = Number(itemCount);
+        console.log(`[API] POST /api/progress by ${userId}. itemCount=${parsedItemCount}`);
 
-        if (!itemCount) {
-            return res.status(400).json({ error: 'itemCount is required' });
+        if (!Number.isFinite(parsedItemCount) || parsedItemCount <= 0) {
+            return res.status(400).json({ error: 'itemCount must be a positive number.' });
         }
 
-        // Get existing progress or create new
-        const progress = userProgress.get(userId) || {
-            userId,
-            milestones: [],
-            currentPhase: 'initial',
-            startDate: new Date().toISOString()
-        };
+        const trimmedMilestone = typeof milestone === 'string' ? milestone.trim().slice(0, 160) : '';
+        const trimmedNotes = typeof notes === 'string' ? notes.trim().slice(0, 400) : '';
 
-        // Add new milestone
+        const { vault, key } = await loadVaultForRequest(req);
+
+        if (!vault.progress || typeof vault.progress !== 'object') {
+            vault.progress = {
+                userId,
+                milestones: [],
+                currentPhase: 'initial',
+                startDate: new Date().toISOString()
+            };
+        }
+
+        const previousMilestone = vault.progress.milestones?.[vault.progress.milestones.length - 1];
+        const improvement = previousMilestone
+            ? previousMilestone.itemCount - parsedItemCount
+            : 0;
+
         const newMilestone = {
-            itemCount,
+            itemCount: parsedItemCount,
             date: new Date().toISOString(),
-            milestone: milestone || `Reached ${itemCount} items`,
-            notes: notes || '',
-            improvement: progress.milestones.length > 0 
-                ? progress.milestones[progress.milestones.length - 1].itemCount - itemCount 
-                : 0
+            milestone: trimmedMilestone || `Reached ${parsedItemCount} items`,
+            notes: trimmedNotes,
+            improvement
         };
 
-        progress.milestones.push(newMilestone);
-        progress.lastUpdate = new Date().toISOString();
-        progress.currentItemCount = itemCount;
+        vault.progress.milestones = Array.isArray(vault.progress.milestones)
+            ? [...vault.progress.milestones, newMilestone]
+            : [newMilestone];
+        vault.progress.lastUpdate = new Date().toISOString();
+        vault.progress.currentItemCount = parsedItemCount;
 
-        // Update phase based on current item count
-        if (itemCount <= 50) progress.currentPhase = 'maintenance';
-        else if (itemCount <= 100) progress.currentPhase = 'optimization';
-        else if (itemCount <= 200) progress.currentPhase = 'refinement';
-        else if (itemCount <= 500) progress.currentPhase = 'reduction';
-        else progress.currentPhase = 'initial';
+        if (parsedItemCount <= 50) vault.progress.currentPhase = 'maintenance';
+        else if (parsedItemCount <= 100) vault.progress.currentPhase = 'optimization';
+        else if (parsedItemCount <= 200) vault.progress.currentPhase = 'refinement';
+        else if (parsedItemCount <= 500) vault.progress.currentPhase = 'reduction';
+        else vault.progress.currentPhase = 'initial';
 
-        // Store updated progress
-        userProgress.set(userId, progress);
+        if (typeof vault.progress.targetItemCount !== 'number') {
+            vault.progress.targetItemCount = 50;
+        }
+
+        await saveVaultForUser(userId, key, vault);
+
+        userProgress.set(userId, vault.progress);
 
         res.json({
             success: true,
-            progress,
+            progress: vault.progress,
             latestMilestone: newMilestone,
-            message: `Great progress! You've reduced to ${itemCount} items.`
+            message: `Great progress! You've reduced to ${parsedItemCount} items.`
         });
 
     } catch (error) {
         console.error('Progress POST error:', error);
-        res.status(500).json({ error: 'Failed to update progress' });
+        const status = error.message?.includes('encryption key') ? 401 : 500;
+        res.status(status).json({ error: status === 401 ? 'Re-authentication required.' : 'Failed to update progress' });
     }
+});
+
+app.get('/api/admin/progress-summary', authenticateRequest, authorizeRoles('admin'), (_req, res) => {
+    const allProgress = Array.from(userProgress.values());
+    const totalTrackedUsers = new Set(allProgress.map(p => p.userId)).size;
+    const totalMilestones = allProgress.reduce((acc, p) => acc + (p.milestones?.length || 0), 0);
+    const totalItemsReduced = allProgress.reduce((acc, p) => {
+        const milestones = p.milestones || [];
+        if (!milestones.length) return acc;
+        return acc + milestones.reduce((sum, entry) => sum + Math.max(0, entry.improvement || 0), 0);
+    }, 0);
+
+    const phaseDistribution = allProgress.reduce((distribution, p) => {
+        const phase = (p.currentPhase || 'unknown').toLowerCase();
+        distribution[phase] = (distribution[phase] || 0) + 1;
+        return distribution;
+    }, {});
+
+    const THIRTY_DAYS_MS = 1000 * 60 * 60 * 24 * 30;
+    const activeUsers = allProgress.filter(p => {
+        const lastUpdate = new Date(p.lastUpdate || 0).getTime();
+        return !Number.isNaN(lastUpdate) && Date.now() - lastUpdate <= THIRTY_DAYS_MS;
+    }).length;
+
+    res.json({
+        summary: {
+            totalTrackedUsers,
+            profileCount: userProfiles.size,
+            totalMilestones,
+            totalItemsReduced,
+            activeUsers,
+            phaseDistribution,
+            generatedAt: new Date().toISOString()
+        }
+    });
 });
 
 // Helper function for timeframe estimation
@@ -605,7 +1333,9 @@ io.on('connection', (socket) => {
             computed = null
         } = payload;
 
-        const messageText = typeof rawMessage === 'string' ? rawMessage : (rawMessage == null ? '' : String(rawMessage));
+        const messageText = typeof rawMessage === 'string'
+            ? rawMessage.trim()
+            : (rawMessage == null ? '' : String(rawMessage).trim());
         const sessionKey = userId || socket.id;
 
         console.log(`[Socket] chat message from ${socket.id}. Length=${messageText.length} (session=${sessionKey})`);
@@ -614,6 +1344,13 @@ io.on('connection', (socket) => {
             return socket.emit('chat message part', {
                 user: 'AI',
                 message: 'I need a message to respond to. Please share what you would like to work on.'
+            });
+        }
+
+        if (messageText.length > 2000) {
+            return socket.emit('chat message part', {
+                user: 'AI',
+                message: 'Message is too long. Please keep updates under 2000 characters.'
             });
         }
 

@@ -3,14 +3,27 @@
 
 class MinimalismDashboard {
     constructor() {
-        this.userProfile = null;
-        this.userProgress = null;
-        this.goals = [];
-    this.decisionHistory = [];
-    this.successStories = [];
+        const vault = window.Auth?.getVault() || null;
+        this.userProfile = vault?.profile || null;
+        this.userProgress = vault?.progress || null;
+        this.goals = Array.isArray(vault?.goals) ? [...vault.goals] : [];
+        this.decisionHistory = Array.isArray(vault?.decisions) ? [...vault.decisions] : [];
+        this.successStories = Array.isArray(vault?.stories) ? [...vault.stories] : [];
         this.snapshot = null;
         this.computedProfile = null;
         
+        document.addEventListener('vault:updated', (event) => {
+            const updatedVault = event?.detail?.vault;
+            if (!updatedVault) return;
+            this.userProfile = updatedVault.profile || null;
+            this.userProgress = updatedVault.progress || null;
+            this.goals = Array.isArray(updatedVault.goals) ? [...updatedVault.goals] : [];
+            this.decisionHistory = Array.isArray(updatedVault.decisions) ? [...updatedVault.decisions] : [];
+            this.successStories = Array.isArray(updatedVault.stories) ? [...updatedVault.stories] : [];
+            this.refreshSnapshot();
+            this.updateAllVisuals();
+        });
+
         this.init();
     }
 
@@ -25,37 +38,17 @@ class MinimalismDashboard {
         try {
             if (window.ProfileStore) {
                 this.refreshSnapshot(true);
-            } else {
-                const profileData = localStorage.getItem('minimalism_user_profile');
-                if (profileData) {
-                    this.userProfile = JSON.parse(profileData);
-                }
-
-                const progressData = localStorage.getItem('minimalism_progress');
-                if (progressData) {
-                    this.userProgress = JSON.parse(progressData);
-                }
             }
 
-            // Load goals
-            const goalsData = localStorage.getItem('minimalism_goals');
-            if (goalsData) {
-                this.goals = JSON.parse(goalsData);
+            const vault = window.Auth?.getVault() || null;
+            if (vault) {
+                this.userProfile = vault.profile || this.userProfile;
+                this.userProgress = vault.progress || this.userProgress;
+                this.goals = Array.isArray(vault.goals) ? [...vault.goals] : this.goals;
+                this.decisionHistory = Array.isArray(vault.decisions) ? [...vault.decisions] : this.decisionHistory;
+                this.successStories = Array.isArray(vault.stories) ? [...vault.stories] : this.successStories;
             }
 
-            // Load decision history
-            const decisionsData = localStorage.getItem('minimalism_decisions');
-            if (decisionsData) {
-                this.decisionHistory = JSON.parse(decisionsData);
-            }
-
-            // Success stories
-            const storiesData = localStorage.getItem('minimalism_success_stories');
-            if (storiesData) {
-                this.successStories = JSON.parse(storiesData);
-            }
-
-            // If no data, redirect to assessment
             if (!this.userProfile) {
                 this.showNoDataMessage();
             }
@@ -143,23 +136,23 @@ class MinimalismDashboard {
 
         const goalForm = document.getElementById('goalForm');
         if (goalForm) {
-            goalForm.addEventListener('submit', (e) => {
+            goalForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
-                this.setNewGoal();
+                await this.setNewGoal();
             });
         }
 
         const goalList = document.getElementById('goalList');
         if (goalList) {
-            goalList.addEventListener('click', (event) => {
+            goalList.addEventListener('click', async (event) => {
                 const actionButton = event.target.closest('[data-action]');
                 if (!actionButton) return;
                 const goalId = actionButton.getAttribute('data-goal');
                 const action = actionButton.getAttribute('data-action');
                 if (action === 'complete') {
-                    this.markGoalComplete(goalId);
+                    await this.markGoalComplete(goalId);
                 } else if (action === 'delete') {
-                    this.deleteGoal(goalId);
+                    await this.deleteGoal(goalId);
                 }
             });
         }
@@ -442,7 +435,7 @@ class MinimalismDashboard {
         `).join('');
     }
 
-    addSuccessStory() {
+    async addSuccessStory() {
         const titleInput = document.getElementById('successStoryTitle');
         const textInput = document.getElementById('successStoryText');
         if (!titleInput || !textInput) return;
@@ -463,7 +456,7 @@ class MinimalismDashboard {
         };
 
         this.successStories.push(story);
-        this.saveSuccessStories();
+    await this.saveSuccessStories();
         this.renderSuccessStories();
 
         titleInput.value = '';
@@ -472,8 +465,16 @@ class MinimalismDashboard {
         this.showNotification('Success story saved! Celebrate your progress.', 'success');
     }
 
-    saveSuccessStories() {
-        localStorage.setItem('minimalism_success_stories', JSON.stringify(this.successStories));
+    async saveSuccessStories() {
+        if (!window.Auth) return;
+        try {
+            await window.Auth.updateVault((vault) => {
+                vault.stories = Array.isArray(this.successStories) ? this.successStories : [];
+                return vault;
+            });
+        } catch (error) {
+            console.error('Failed to persist success stories:', error);
+        }
     }
 
     getAvatarInitials() {
@@ -593,7 +594,7 @@ class MinimalismDashboard {
         return Math.floor((today - startDate) / (1000 * 60 * 60 * 24));
     }
 
-    setNewGoal() {
+    async setNewGoal() {
         const targetInput = document.getElementById('goalTargetInput');
         const noteInput = document.getElementById('goalNoteInput');
         const dateInput = document.getElementById('goalTargetDate');
@@ -630,7 +631,7 @@ class MinimalismDashboard {
         };
 
         this.goals.push(goal);
-        this.saveGoals();
+    await this.saveGoals();
         this.renderGoals();
 
         if (targetInput) targetInput.value = '';
@@ -686,19 +687,19 @@ class MinimalismDashboard {
             }).join('');
     }
 
-    markGoalComplete(goalId) {
+    async markGoalComplete(goalId) {
         const goal = this.goals.find(g => g.id === goalId);
         if (!goal) return;
         goal.status = 'complete';
         goal.completedAt = new Date().toISOString();
-        this.saveGoals();
+        await this.saveGoals();
         this.renderGoals();
         this.showNotification('Goal marked as complete! Great work.', 'success');
     }
 
-    deleteGoal(goalId) {
+    async deleteGoal(goalId) {
         this.goals = this.goals.filter(goal => goal.id !== goalId);
-        this.saveGoals();
+        await this.saveGoals();
         this.renderGoals();
         this.showNotification('Goal removed.', 'info');
     }
@@ -736,19 +737,17 @@ class MinimalismDashboard {
         this.userProgress.lastUpdate = new Date().toISOString();
         this.userProgress.currentItemCount = itemCount;
 
-        // Save locally
-        localStorage.setItem('minimalism_progress', JSON.stringify(this.userProgress));
-        if (window.ProfileStore) {
+        if (window.ProfileStore && !window.Auth) {
             ProfileStore.setProgress(this.userProgress);
             this.refreshSnapshot(true);
         }
 
         // Send to API
         try {
-            const response = await fetch('/api/progress', {
+            const response = await (window.Auth?.apiFetch?.('/api/progress', {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json',
+                    'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
                     userId: this.userProfile?.id || 'anonymous',
@@ -756,10 +755,22 @@ class MinimalismDashboard {
                     milestone: milestone.milestone,
                     notes: milestone.notes
                 })
-            });
+            }) || fetch('/api/progress', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    userId: this.userProfile?.id || 'anonymous',
+                    itemCount: itemCount,
+                    milestone: milestone.milestone,
+                    notes: milestone.notes
+                })
+            }));
 
             if (response.ok) {
                 this.showNotification('Progress updated successfully!', 'success');
+                if (window.Auth) {
+                    await window.Auth.syncVault();
+                }
             }
         } catch (error) {
             console.error('Failed to sync progress:', error);
@@ -808,24 +819,30 @@ class MinimalismDashboard {
     }
 
     exportProgressData() {
-        const exportData = {
-            profile: this.userProfile,
-            progress: this.userProgress,
-            goals: this.goals,
-            decisions: this.decisionHistory,
-            stories: this.successStories,
-            exportDate: new Date().toISOString()
-        };
+        (async () => {
+            try {
+                const response = await (window.Auth?.apiFetch?.('/api/account/export', {
+                    method: 'POST'
+                }) || fetch('/api/account/export', { method: 'POST' }));
 
-        const dataStr = JSON.stringify(exportData, null, 2);
-        const dataBlob = new Blob([dataStr], { type: 'application/json' });
-        
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(dataBlob);
-        link.download = `minimalism-progress-${new Date().toISOString().split('T')[0]}.json`;
-        link.click();
-        
-        this.showNotification('Progress data exported successfully!', 'success');
+                if (!response.ok) {
+                    const data = await response.json().catch(() => ({}));
+                    throw new Error(data?.error || 'Unable to export data.');
+                }
+
+                const blob = await response.blob();
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = `minimalism-progress-${new Date().toISOString().split('T')[0]}.json`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                this.showNotification('Encrypted export generated successfully!', 'success');
+            } catch (error) {
+                console.error('Export failed:', error);
+                this.showNotification('Unable to export data. Please try again while logged in.', 'warning');
+            }
+        })();
     }
 
     updateProgressChart() {
@@ -834,8 +851,16 @@ class MinimalismDashboard {
         console.log('Progress chart update - ready for chart library integration');
     }
 
-    saveGoals() {
-        localStorage.setItem('minimalism_goals', JSON.stringify(this.goals));
+    async saveGoals() {
+        if (!window.Auth) return;
+        try {
+            await window.Auth.updateVault((vault) => {
+                vault.goals = Array.isArray(this.goals) ? this.goals : [];
+                return vault;
+            });
+        } catch (error) {
+            console.error('Failed to persist goals:', error);
+        }
     }
 
     getMilestoneIcon(milestone) {
@@ -926,7 +951,17 @@ function viewCategory(category) {
 
 // Initialize dashboard when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    window.dashboardApp = new MinimalismDashboard();
+    const bootstrap = () => {
+        if (!window.dashboardApp) {
+            window.dashboardApp = new MinimalismDashboard();
+        }
+    };
+
+    if (window.Auth && typeof window.Auth.onReady === 'function') {
+        window.Auth.onReady(bootstrap);
+    } else {
+        bootstrap();
+    }
 });
 
 // (Removed) Inline CSS injection; styles are centralized in minimal-design.css

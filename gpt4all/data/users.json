@@ -1,0 +1,14 @@
+[
+  {
+    "id": "b29f4094-be7c-4921-93fa-82862d7ebb03",
+    "email": "mark101020036@gmail.com",
+    "passwordHash": "$2a$12$NRO8KZ2E.xRzVjhqhK8IBeEkWACsupcPccl/7SFydWeA22DuFArce",
+    "createdAt": "2025-09-29T16:29:52.854Z",
+    "profile": {
+      "name": "Mark"
+    },
+    "role": "admin",
+    "encryptionSalt": "V2NUyu1zNDbgaostndR2cg==",
+    "lastLoginAt": "2025-09-29T16:30:10.488Z"
+  }
+]

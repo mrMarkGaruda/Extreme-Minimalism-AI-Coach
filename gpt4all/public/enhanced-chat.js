@@ -4,10 +4,11 @@
 class EnhancedMinimalismChat {
     constructor() {
         this.socket = io();
-        this.userProfile = null;
-        this.userProgress = null;
-    this.userGoals = [];
-        this.conversationHistory = [];
+        const vault = window.Auth?.getVault() || null;
+        this.userProfile = vault?.profile || null;
+        this.userProgress = vault?.progress || null;
+        this.userGoals = Array.isArray(vault?.goals) ? [...vault.goals] : [];
+        this.conversationHistory = Array.isArray(vault?.conversationHistory) ? [...vault.conversationHistory] : [];
         this.currentMode = 'general';
         this.isTyping = false;
         this.autoScrollEnabled = true;
@@ -60,6 +61,20 @@ class EnhancedMinimalismChat {
 
         window.addEventListener('pageshow', () => {
             this.skipDisconnectNotice = false;
+        });
+
+        document.addEventListener('vault:updated', (event) => {
+            const updatedVault = event?.detail?.vault;
+            if (!updatedVault) return;
+            this.userProfile = updatedVault.profile || this.userProfile;
+            this.userProgress = updatedVault.progress || this.userProgress;
+            this.userGoals = Array.isArray(updatedVault.goals) ? [...updatedVault.goals] : this.userGoals;
+            if (Array.isArray(updatedVault.conversationHistory)) {
+                this.conversationHistory = [...updatedVault.conversationHistory];
+                if (!this.isReplayingHistory) {
+                    this.renderConversationFromHistory();
+                }
+            }
         });
 
         this.cacheDom();
@@ -115,28 +130,16 @@ class EnhancedMinimalismChat {
         try {
             if (window.ProfileStore) {
                 this.refreshProfileSnapshot(true);
-            } else {
-                const profileData = localStorage.getItem('minimalism_user_profile');
-                if (profileData) {
-                    this.userProfile = JSON.parse(profileData);
+            } else if (window.Auth) {
+                const vault = window.Auth.getVault();
+                if (vault) {
+                    this.userProfile = vault.profile || this.userProfile;
+                    this.userProgress = vault.progress || this.userProgress;
+                    this.userGoals = Array.isArray(vault.goals) ? [...vault.goals] : this.userGoals;
+                    this.conversationHistory = Array.isArray(vault.conversationHistory)
+                        ? [...vault.conversationHistory]
+                        : this.conversationHistory;
                 }
-
-                const progressData = localStorage.getItem('minimalism_progress');
-                if (progressData) {
-                    this.userProgress = JSON.parse(progressData);
-                }
-            }
-
-            const goalsData = localStorage.getItem('minimalism_goals');
-            if (goalsData) {
-                const parsedGoals = JSON.parse(goalsData);
-                this.userGoals = Array.isArray(parsedGoals) ? parsedGoals : [];
-            }
-
-            // Load conversation history
-            const historyData = localStorage.getItem('minimalism_conversation_history');
-            if (historyData) {
-                this.conversationHistory = JSON.parse(historyData);
             }
 
             if (Array.isArray(this.conversationHistory) && this.conversationHistory.length > 0) {
@@ -161,17 +164,12 @@ class EnhancedMinimalismChat {
         if (Array.isArray(this.userGoals) && this.userGoals.length) {
             return this.userGoals;
         }
-        try {
-            const goalsData = localStorage.getItem('minimalism_goals');
-            if (goalsData) {
-                const parsed = JSON.parse(goalsData);
-                if (Array.isArray(parsed)) {
-                    this.userGoals = parsed;
-                    return parsed;
-                }
+        if (window.Auth) {
+            const vault = window.Auth.getVault();
+            if (Array.isArray(vault?.goals)) {
+                this.userGoals = [...vault.goals];
+                return this.userGoals;
             }
-        } catch (error) {
-            console.warn('[Chat] Failed to load goals from storage', error);
         }
         this.userGoals = [];
         return this.userGoals;
@@ -277,14 +275,9 @@ class EnhancedMinimalismChat {
         }
 
         if (this.clearHistoryButton) {
-            this.clearHistoryButton.addEventListener('click', () => {
+            this.clearHistoryButton.addEventListener('click', async () => {
                 const ok = confirm('Clear the entire chat history? This action cannot be undone.');
                 if (!ok) return;
-                try {
-                    localStorage.removeItem('minimalism_conversation_history');
-                } catch (e) {
-                    console.warn('Failed to clear history from storage', e);
-                }
                 this.conversationHistory = [];
                 if (this.messagesContainer) {
                     this.messagesContainer.innerHTML = '';
@@ -293,6 +286,12 @@ class EnhancedMinimalismChat {
                 this.showEmptyState();
                 this.scrollMessagesToBottom(true);
                 this.closeQuickMenu();
+                if (window.Auth) {
+                    await window.Auth.updateVault((vault) => {
+                        vault.conversationHistory = [];
+                        return vault;
+                    });
+                }
             });
         }
 
@@ -958,29 +957,56 @@ class EnhancedMinimalismChat {
         this.saveConversationHistory();
     }
 
+    async persistConversationHistoryImmediate() {
+        if (!window.Auth) return;
+        try {
+            this.conversationHistory = Array.isArray(this.conversationHistory)
+                ? this.conversationHistory.slice(-50)
+                : [];
+            await window.Auth.updateVault((vault) => {
+                vault.conversationHistory = Array.isArray(this.conversationHistory)
+                    ? [...this.conversationHistory]
+                    : [];
+                return vault;
+            });
+        } catch (error) {
+            console.error('[Chat] Failed to persist conversation history:', error);
+        }
+    }
+
     saveConversationHistory() {
-        localStorage.setItem('minimalism_conversation_history', JSON.stringify(this.conversationHistory));
+        if (!window.Auth) return;
+        clearTimeout(this._historyPersistTimer);
+        this._historyPersistTimer = setTimeout(() => {
+            this.persistConversationHistoryImmediate();
+        }, 750);
     }
 
     loadConversationHistory() {
-        if (this.conversationHistory.length === 0) {
+        this.renderConversationFromHistory();
+    }
+
+    renderConversationFromHistory() {
+        if (!Array.isArray(this.conversationHistory) || this.conversationHistory.length === 0) {
             this.resetEmptyState();
             this.showEmptyState();
             return;
         }
-        
-        // Load last messages to provide context (show more for continuity)
+
         this.dismissEmptyState(true);
         const recentMessages = this.conversationHistory.slice(-20);
         this.isReplayingHistory = true;
-        
+
+        if (this.messagesContainer) {
+            this.messagesContainer.innerHTML = '';
+        }
+
         recentMessages.forEach(entry => {
             const isUser = entry.role === 'user';
             const user = isUser ? 'User' : 'AI Coach';
             this.addMessage(user, entry.content, isUser);
         });
         this.isReplayingHistory = false;
-        // Ensure we start at bottom
         this.scrollMessagesToBottom(true);
     }
 
@@ -1242,5 +1268,15 @@ function closeCelebration() {
 
 // Initialize the enhanced chat when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    window.chatApp = new EnhancedMinimalismChat();
+    const bootstrap = () => {
+        if (!window.chatApp) {
+            window.chatApp = new EnhancedMinimalismChat();
+        }
+    };
+
+    if (window.Auth && typeof window.Auth.onReady === 'function') {
+        window.Auth.onReady(bootstrap);
+    } else {
+        bootstrap();
+    }
 });

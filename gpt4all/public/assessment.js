@@ -31,10 +31,10 @@ class MinimalismAssessment {
                 this.profileSnapshot = snapshot;
                 this.userProfile = snapshot.profile;
                 this.computedProfile = snapshot.computed;
-            } else {
-                const profileData = localStorage.getItem('minimalism_user_profile');
-                if (profileData) {
-                    this.userProfile = JSON.parse(profileData);
+            } else if (window.Auth) {
+                const vault = window.Auth.getVault();
+                if (vault?.profile) {
+                    this.userProfile = vault.profile;
                 }
             }
         } catch (error) {
@@ -331,15 +331,20 @@ class MinimalismAssessment {
     }
 
     saveFormData() {
+        if (typeof sessionStorage === 'undefined') return;
         const formData = this.collectFormData();
-        localStorage.setItem('minimalism_assessment_data', JSON.stringify(formData));
-        localStorage.setItem('minimalism_assessment_step', this.currentStep.toString());
+        sessionStorage.setItem('minimalism_assessment_data', JSON.stringify(formData));
+        sessionStorage.setItem('minimalism_assessment_step', this.currentStep.toString());
     }
 
     loadExistingData() {
         try {
-            const savedData = localStorage.getItem('minimalism_assessment_data');
-            const savedStep = localStorage.getItem('minimalism_assessment_step');
+            const savedData = typeof sessionStorage !== 'undefined'
+                ? sessionStorage.getItem('minimalism_assessment_data')
+                : null;
+            const savedStep = typeof sessionStorage !== 'undefined'
+                ? sessionStorage.getItem('minimalism_assessment_step')
+                : null;
             
             if (savedData) {
                 this.formData = JSON.parse(savedData);
@@ -454,10 +459,18 @@ class MinimalismAssessment {
             const finalData = this.collectFormData();
             
             // Generate user profile
-            const profile = this.generateUserProfile(finalData);
-            
-            // Save to local storage
-            localStorage.setItem('minimalism_user_profile', JSON.stringify(profile));
+            let profile = this.generateUserProfile(finalData);
+
+            if (window.Auth) {
+                await window.Auth.updateVault((vault) => {
+                    vault.profile = profile;
+                    if (!vault.progress) {
+                        vault.progress = this.createInitialProgress(profile);
+                    }
+                    return vault;
+                });
+            }
+
             this.userProfile = profile;
             if (window.ProfileStore) {
                 this.profileSnapshot = ProfileStore.setProfile(profile);
@@ -471,11 +484,20 @@ class MinimalismAssessment {
             
             // Update profile with API recommendations
             if (apiResponse) {
-                profile.apiRecommendations = apiResponse.recommendations;
-                profile.phase = apiResponse.phase;
-                profile.estimatedTimeframe = apiResponse.estimatedTimeframe;
-                localStorage.setItem('minimalism_user_profile', JSON.stringify(profile));
+                profile = {
+                    ...profile,
+                    apiRecommendations: apiResponse.recommendations,
+                    phase: apiResponse.phase,
+                    estimatedTimeframe: apiResponse.estimatedTimeframe
+                };
                 this.userProfile = profile;
+                if (window.Auth) {
+                    await window.Auth.updateVault((vault) => {
+                        vault.profile = profile;
+                        vault.progress = vault.progress || this.createInitialProgress(profile);
+                        return vault;
+                    });
+                }
                 if (window.ProfileStore) {
                     this.profileSnapshot = ProfileStore.setProfile(profile);
                     this.userProfile = this.profileSnapshot.profile;
@@ -488,10 +510,14 @@ class MinimalismAssessment {
             this.displayProfileSummary(profile);
             
             // Initialize progress tracking
-            this.initializeProgress(profile);
+            await this.initializeProgress(profile);
             this.updateSidebarProfile();
             
             this.showNotification('Assessment completed successfully! Your personalized profile has been created.', 'success');
+
+            if (window.Auth) {
+                await window.Auth.syncVault();
+            }
         } catch (error) {
             console.error('Error completing assessment:', error);
             this.showNotification('Assessment completed locally. Online features may be limited.', 'info');
@@ -587,19 +613,23 @@ class MinimalismAssessment {
 
     async sendToAPI(profile) {
         try {
-            const response = await fetch('/api/assessment', {
+            const requestBody = {
+                currentItems: profile.currentItems,
+                lifestyle: profile.lifestyle,
+                motivation: profile.motivation,
+                challenges: profile.challenges,
+                userId: profile.id
+            };
+
+            const response = await (window.Auth?.apiFetch?.('/api/assessment', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    currentItems: profile.currentItems,
-                    lifestyle: profile.lifestyle,
-                    motivation: profile.motivation,
-                    challenges: profile.challenges,
-                    userId: profile.id
-                })
-            });
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+            }) || fetch('/api/assessment', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+            }));
 
             if (response.ok) {
                 return await response.json();
@@ -646,25 +676,35 @@ class MinimalismAssessment {
         `;
     }
 
-    initializeProgress(profile) {
-        const initialProgress = {
+    createInitialProgress(profile) {
+        const now = new Date().toISOString();
+        return {
             userId: profile.id,
             milestones: [{
                 itemCount: profile.currentItems,
-                date: new Date().toISOString(),
+                date: now,
                 milestone: 'Assessment completed',
                 notes: 'Starting minimalism journey',
                 improvement: 0
             }],
             currentPhase: profile.phase,
-            startDate: new Date().toISOString(),
-            lastUpdate: new Date().toISOString(),
+            startDate: now,
+            lastUpdate: now,
             currentItemCount: profile.currentItems,
             targetItemCount: profile.targetItems
         };
+    }
 
-        localStorage.setItem('minimalism_progress', JSON.stringify(initialProgress));
-        if (window.ProfileStore) {
+    async initializeProgress(profile) {
+        const initialProgress = this.createInitialProgress(profile);
+        this.userProgress = initialProgress;
+
+        if (window.Auth) {
+            await window.Auth.updateVault((vault) => {
+                vault.progress = initialProgress;
+                return vault;
+            });
+        } else if (window.ProfileStore) {
             const snapshot = ProfileStore.setProgress(initialProgress);
             this.profileSnapshot = snapshot;
             this.userProfile = snapshot.profile;
@@ -750,7 +790,17 @@ function changeStep(direction) {
 
 // Initialize the assessment when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    window.assessmentApp = new MinimalismAssessment();
+    const bootstrap = () => {
+        if (!window.assessmentApp) {
+            window.assessmentApp = new MinimalismAssessment();
+        }
+    };
+
+    if (window.Auth && typeof window.Auth.onReady === 'function') {
+        window.Auth.onReady(bootstrap);
+    } else {
+        bootstrap();
+    }
 });
 
 // Export for use in other modules
