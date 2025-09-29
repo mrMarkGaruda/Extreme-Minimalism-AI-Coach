@@ -86,6 +86,31 @@ async function writeUsersToDisk(users) {
     await fs.writeFile(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
 }
 
+async function parseVaultFilePayload(filePath, rawContent) {
+    const sanitizedContent = rawContent.replace(/\u0000/g, '');
+
+    try {
+        return JSON.parse(sanitizedContent);
+    } catch (error) {
+        const trimmed = sanitizedContent.trim();
+        const lastBraceIndex = trimmed.lastIndexOf('}');
+
+        if (lastBraceIndex !== -1) {
+            const candidate = trimmed.slice(0, lastBraceIndex + 1);
+            try {
+                const repaired = JSON.parse(candidate);
+                await fs.writeFile(filePath, `${JSON.stringify(repaired, null, 2)}\n`, 'utf8');
+                console.warn(`[Vault] Detected trailing data in ${path.basename(filePath)}. File repaired automatically.`);
+                return repaired;
+            } catch (repairError) {
+                console.error('[Vault] Vault repair attempt failed:', repairError);
+            }
+        }
+
+        throw error;
+    }
+}
+
 async function removeUserById(userId) {
     const users = await readUsersFromDisk();
     const index = users.findIndex(user => user.id === userId);
@@ -204,7 +229,7 @@ async function readUserVault(userId) {
     const filePath = path.join(USER_VAULT_DIR, `${userId}.json`);
     try {
         const data = await fs.readFile(filePath, 'utf8');
-        return JSON.parse(data);
+        return await parseVaultFilePayload(filePath, data);
     } catch (error) {
         if (error.code === 'ENOENT') {
             return null;
