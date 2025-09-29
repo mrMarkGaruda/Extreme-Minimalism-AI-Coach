@@ -3,6 +3,8 @@ import http from 'http';
 import { Server } from 'socket.io';
 import { createCompletionStream, loadModel } from 'gpt4all';
 import { MINIMALISM_COACH_PROMPT } from './prompts/minimalism-coach.js';
+import { ASSESSMENT_PROMPT } from './prompts/assessment-coach.js';
+import { DECISION_SUPPORT_PROMPT } from './prompts/decision-support-coach.js';
 
 const localModelPath = 'orca-mini-3b-gguf2-q4_0.gguf';
 
@@ -21,13 +23,191 @@ const userSessions = new Map();
 const userProfiles = new Map();
 const userProgress = new Map();
 
+const APPROACH_ALIASES = {
+    supportive: ['supportive', 'gentle', 'warm', 'empathic'],
+    direct: ['direct', 'challenging', 'tough-love', 'firm'],
+    question: ['questions', 'question', 'inquiry', 'coaching'],
+    logical: ['logical', 'rational', 'analytical', 'evidence']
+};
+
+const EMOTION_KEYWORDS = {
+    overwhelm: ['overwhelmed', 'stressed', 'anxious', 'burned out', 'burnt out', 'too much', "can't handle", 'exhausted'],
+    resistance: ['stuck', 'resistant', "don't want", 'refuse', 'annoyed', 'frustrated'],
+    excitement: ['excited', 'motivated', 'energized', 'pumped', 'ready'],
+    celebration: ['celebrate', 'proud', 'happy', 'win', 'milestone']
+};
+
+const CRISIS_KEYWORDS = ['give up', 'quit', "can't go on", 'done with this', 'hopeless', 'panic', 'breakdown'];
+
+function normalizeApproach(value = '') {
+    const lower = String(value || '').toLowerCase();
+    for (const [key, aliases] of Object.entries(APPROACH_ALIASES)) {
+        if (aliases.some(alias => lower.includes(alias))) {
+            return key;
+        }
+    }
+    return 'supportive';
+}
+
+function detectEmotionalState(message = '') {
+    const lower = String(message || '').toLowerCase();
+    const detected = { state: null, directive: null, crisis: false };
+
+    if (CRISIS_KEYWORDS.some(keyword => lower.includes(keyword))) {
+        detected.state = 'crisis';
+        detected.crisis = true;
+        detected.directive = 'User is in crisis or considering quitting. Respond with grounding, validation, and immediate micro-steps. Encourage a short break, breathing exercise, and remind them of previous wins.';
+        return detected;
+    }
+
+    for (const [state, keywords] of Object.entries(EMOTION_KEYWORDS)) {
+        if (keywords.some(keyword => lower.includes(keyword))) {
+            detected.state = state;
+            switch (state) {
+                case 'overwhelm':
+                    detected.directive = 'User feels overwhelmed. Slow the pace, validate feelings, and offer one tiny actionable next step.';
+                    break;
+                case 'resistance':
+                    detected.directive = 'User shows resistance. Explore the root gently, acknowledge the challenge, and negotiate a low-friction action.';
+                    break;
+                case 'excitement':
+                    detected.directive = 'User is excited. Celebrate the momentum and channel it into a concrete milestone or stretch goal.';
+                    break;
+                case 'celebration':
+                    detected.directive = 'User is celebrating. Mirror their enthusiasm, highlight progress, and suggest a way to lock in the win.';
+                    break;
+                default:
+                    detected.directive = null;
+            }
+            return detected;
+        }
+    }
+
+    return detected;
+}
+
+function determineCoachingApproach(message = '', contextObj = {}) {
+    const normalizedMode = (contextObj.mode || '').toLowerCase();
+
+    if (normalizedMode === 'assessment') return 'question';
+    if (['decision', 'decision_support', 'decision-support'].includes(normalizedMode)) return 'direct';
+
+    const profilePreference = contextObj.profile?.preferredApproach;
+    if (profilePreference) return normalizeApproach(profilePreference);
+
+    const computedPreference = contextObj.computed?.preferredApproach;
+    if (computedPreference) return normalizeApproach(computedPreference);
+
+    const text = String(message || '').toLowerCase();
+
+    if (text.includes('hold me accountable') || text.includes('push me') || text.includes('challenge')) {
+        return 'direct';
+    }
+
+    if (/(can you|could you|should i|what should|\?)$/.test(text) || text.includes('?')) {
+        return 'question';
+    }
+
+    if (text.includes('data') || text.includes('metrics') || text.includes('numbers') || text.includes('plan')) {
+        return 'logical';
+    }
+
+    if (text.includes('overwhelmed') || text.includes('stress') || text.includes('burned out') || text.includes('tired')) {
+        return 'supportive';
+    }
+
+    return 'supportive';
+}
+
+function getApproachDirective(approach, emotionalState) {
+    switch (approach) {
+        case 'direct':
+            return 'Adopt a firm, accountability-driven tone. Give clear directives, set deadlines, and highlight consequences of inaction.';
+        case 'question':
+            return 'Use a Socratic coaching style. Ask up to two focused questions before offering a concise recommendation.';
+        case 'logical':
+            return 'Lean on logical reasoning, data points, and cost-benefit framing. Minimize emotional language unless needed to validate.';
+        default:
+            return emotionalState === 'resistance'
+                ? 'Stay gentle but confident. Normalize setbacks and co-create a very small next action to regain momentum.'
+                : 'Lead with empathy and validation. Offer encouragement and break guidance into manageable steps.';
+    }
+}
+
+function getGenerationSettings(mode, approach, emotionalState, crisis) {
+    let temperature = 0.65;
+    let maxTokens = 180;
+    let topP = 0.9;
+
+    switch ((mode || '').toLowerCase()) {
+        case 'assessment':
+            temperature = 0.6;
+            maxTokens = 220;
+            break;
+        case 'decision':
+        case 'decision_support':
+        case 'decision-support':
+            temperature = 0.55;
+            maxTokens = 170;
+            break;
+        case 'emergency':
+            temperature = 0.5;
+            maxTokens = 210;
+            break;
+        default:
+            temperature = 0.63;
+            maxTokens = 190;
+    }
+
+    if (approach === 'direct') {
+        temperature -= 0.05;
+        topP = 0.88;
+    } else if (approach === 'question') {
+        temperature += 0.05;
+        topP = 0.92;
+    } else if (approach === 'logical') {
+        temperature = Math.max(0.5, temperature - 0.08);
+        topP = 0.87;
+    }
+
+    if (emotionalState === 'overwhelm') {
+        temperature = Math.max(0.5, temperature - 0.05);
+        maxTokens += 20;
+    } else if (emotionalState === 'excitement' || emotionalState === 'celebration') {
+        temperature = Math.min(0.75, temperature + 0.05);
+    }
+
+    if (crisis) {
+        temperature = 0.45;
+        topP = 0.85;
+        maxTokens = Math.max(maxTokens, 220);
+    }
+
+    return {
+        temperature: Number(temperature.toFixed(2)),
+        max_tokens: Math.round(maxTokens),
+        top_p: Number(topP.toFixed(2))
+    };
+}
+
 // Pre-optimized prompt for lightning-fast responses
 const SYSTEM_PROMPT = MINIMALISM_COACH_PROMPT.trim();
+const ASSESSMENT_SYSTEM_PROMPT = ASSESSMENT_PROMPT.trim();
+const DECISION_SUPPORT_SYSTEM_PROMPT = DECISION_SUPPORT_PROMPT.trim();
+
+function getContextualPrompt(mode, contextObj = {}) {
+    const normalized = (mode || '').toLowerCase();
+    if (normalized === 'assessment') return ASSESSMENT_SYSTEM_PROMPT;
+    if (['decision', 'decision_support', 'decision-support'].includes(normalized)) {
+        return DECISION_SUPPORT_SYSTEM_PROMPT;
+    }
+    return SYSTEM_PROMPT;
+}
 
 // Efficient context builder for maintaining conversation flow
-function buildOptimizedPrompt(userMessage, contextObj = {}) {
+function buildOptimizedPrompt(userMessage, contextObj = {}, promptTemplate = SYSTEM_PROMPT) {
     // Clean, direct prompt structure to prevent self-conversation
-    let prompt = `${SYSTEM_PROMPT}\n\n`;
+    let prompt = `${promptTemplate}\n\n`;
 
     // Add user profile
     if (contextObj.profile || contextObj.computed) {
@@ -84,6 +264,16 @@ function buildOptimizedPrompt(userMessage, contextObj = {}) {
     // Add goals
     if (contextObj.goals) {
         prompt += `Goals: ${(contextObj.goals||[]).map(g=>g.text).join('; ')}\n`;
+    }
+    if (contextObj.approachDirective) {
+        prompt += `Preferred Coaching Approach: ${contextObj.approach}. ${contextObj.approachDirective}\n`;
+    }
+    if (contextObj.emotionDirective) {
+        const label = contextObj.emotion || 'emotional context';
+        prompt += `Emotional Focus: ${label}. ${contextObj.emotionDirective}\n`;
+    }
+    if (contextObj.crisis) {
+        prompt += 'Crisis Protocol: Offer reassurance, ensure emotional safety, suggest one grounding action, and invite them to reach out for extra support. Avoid overwhelming tasks.\n';
     }
     // Add recent chat
     if (contextObj.recentChat && contextObj.recentChat.length > 0) {
@@ -164,6 +354,10 @@ app.post('/api/chat', async (req, res) => {
         const sessionKey = userId;
         const session = userSessions.get(sessionKey) || { exchanges: [] };
 
+        const approach = determineCoachingApproach(message, { mode, profile, computed });
+        const emotionalSnapshot = detectEmotionalState(message);
+        const approachDirective = getApproachDirective(approach, emotionalSnapshot.state);
+
         // Build context object
         const contextObj = {
             profile,
@@ -172,18 +366,23 @@ app.post('/api/chat', async (req, res) => {
             recentChat,
             computed,
             mode,
+            approach,
+            approachDirective,
+            emotion: emotionalSnapshot.state,
+            emotionDirective: emotionalSnapshot.directive,
+            crisis: emotionalSnapshot.crisis,
             sessionContext: context || (session.exchanges.length > 0 
                 ? `Previous: User asked about ${session.exchanges[0].user}... You advised: ${session.exchanges[0].ai}...`
                 : '')
         };
 
-        const coachingPrompt = buildOptimizedPrompt(message, contextObj);
+        const promptTemplate = getContextualPrompt(mode, contextObj);
+        const coachingPrompt = buildOptimizedPrompt(message, contextObj, promptTemplate);
+        const generationSettings = getGenerationSettings(mode, approach, emotionalSnapshot.state, emotionalSnapshot.crisis);
 
         // Generate response with streaming for speed
         const responseStream = createCompletionStream(model, coachingPrompt, {
-            temperature: 0.7,
-            max_tokens: 150,
-            top_p: 0.9,
+            ...generationSettings,
             stop: ['\n\nHuman:', '\nUser:', '\nCoach:', 'Human:', 'User:', 'Coach:']
         });
 
@@ -444,24 +643,33 @@ io.on('connection', (socket) => {
                 ? `Previous: User asked about ${session.exchanges[0].user}... You advised: ${session.exchanges[0].ai}...`
                 : '';
 
+            const approach = determineCoachingApproach(messageText, { mode, profile, computed });
+            const emotionalSnapshot = detectEmotionalState(messageText);
+            const approachDirective = getApproachDirective(approach, emotionalSnapshot.state);
+
             const contextObj = {
                 profile: profile || userProfiles.get(sessionKey) || null,
                 progress: progress || userProgress.get(sessionKey) || null,
                 goals: Array.isArray(goals) ? goals : [],
                 recentChat: Array.isArray(recentChat) ? recentChat : [],
                 mode,
+                approach,
+                approachDirective,
+                emotion: emotionalSnapshot.state,
+                emotionDirective: emotionalSnapshot.directive,
+                crisis: emotionalSnapshot.crisis,
                 computed: computed || null,
                 sessionContext: contextString
             };
 
             // Build optimized coaching prompt
-            const coachingPrompt = buildOptimizedPrompt(messageText, contextObj);
+            const promptTemplate = getContextualPrompt(mode, contextObj);
+            const coachingPrompt = buildOptimizedPrompt(messageText, contextObj, promptTemplate);
+            const generationSettings = getGenerationSettings(mode, approach, emotionalSnapshot.state, emotionalSnapshot.crisis);
 
             // Create streaming response with coaching context
             const responseStream = createCompletionStream(model, coachingPrompt, {
-                temperature: 0.7, // Balanced creativity for coaching
-                max_tokens: 150,  // Keep responses focused and prevent rambling
-                top_p: 0.9,
+                ...generationSettings,
                 stop: ['\n\nHuman:', '\nUser:', '\nCoach:', 'Human:', 'User:', 'Coach:'] // Prevent self-conversation
             });
 

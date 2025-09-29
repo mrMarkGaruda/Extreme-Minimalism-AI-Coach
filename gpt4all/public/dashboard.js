@@ -6,7 +6,8 @@ class MinimalismDashboard {
         this.userProfile = null;
         this.userProgress = null;
         this.goals = [];
-        this.decisionHistory = [];
+    this.decisionHistory = [];
+    this.successStories = [];
         this.snapshot = null;
         this.computedProfile = null;
         
@@ -18,10 +19,6 @@ class MinimalismDashboard {
         this.updateSidebarProfile();
         this.updateAllVisuals();
         this.setupEventListeners();
-    // Optional sections removed for minimal single-view layout
-    // this.initializeCategories();
-    // this.checkAchievements();
-    // this.updateProgressChart();
     }
 
     loadUserData() {
@@ -50,6 +47,12 @@ class MinimalismDashboard {
             const decisionsData = localStorage.getItem('minimalism_decisions');
             if (decisionsData) {
                 this.decisionHistory = JSON.parse(decisionsData);
+            }
+
+            // Success stories
+            const storiesData = localStorage.getItem('minimalism_success_stories');
+            if (storiesData) {
+                this.successStories = JSON.parse(storiesData);
             }
 
             // If no data, redirect to assessment
@@ -135,29 +138,55 @@ class MinimalismDashboard {
         // Progress logging
         window.addProgress = () => this.showProgressModal();
         
-        // Goal setting
-        window.setGoal = () => this.setNewGoal();
-        
         // Export functionality
         window.exportProgress = () => this.exportProgressData();
-        
-        // Enter key for goal setting (section may not exist)
-        const goalInput = document.getElementById('goalInput');
-        if (goalInput) {
-            goalInput.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') this.setNewGoal();
+
+        const goalForm = document.getElementById('goalForm');
+        if (goalForm) {
+            goalForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.setNewGoal();
+            });
+        }
+
+        const goalList = document.getElementById('goalList');
+        if (goalList) {
+            goalList.addEventListener('click', (event) => {
+                const actionButton = event.target.closest('[data-action]');
+                if (!actionButton) return;
+                const goalId = actionButton.getAttribute('data-goal');
+                const action = actionButton.getAttribute('data-action');
+                if (action === 'complete') {
+                    this.markGoalComplete(goalId);
+                } else if (action === 'delete') {
+                    this.deleteGoal(goalId);
+                }
+            });
+        }
+
+        const storyForm = document.getElementById('successStoryForm');
+        if (storyForm) {
+            storyForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.addSuccessStory();
             });
         }
     }
 
     updateAllVisuals() {
-    if (window.ProfileStore) {
-        this.refreshSnapshot();
-    }
-    this.updateSidebarProfile();
-    this.updateProgressOverview();
-    this.updateMilestones();
-    this.updateStats();
+        if (window.ProfileStore) {
+            this.refreshSnapshot();
+        }
+        this.updateSidebarProfile();
+        this.updateProgressOverview();
+        this.updateMilestones();
+        this.updateStats();
+        this.updatePhaseProgression();
+        this.renderGoals();
+        this.initializeCategories();
+        this.updateSummaries();
+        this.renderDecisionHistory();
+        this.renderSuccessStories();
     }
 
     updateProgressOverview() {
@@ -200,7 +229,33 @@ class MinimalismDashboard {
         }
     }
 
-    // updatePhaseProgression removed (phases section not present)
+    updatePhaseProgression() {
+        const timeline = document.getElementById('phaseTimeline');
+        if (!timeline) return;
+
+        const stages = [
+            { label: 'Initial declutter', threshold: 500, description: 'Tackle obvious extras and duplicates.' },
+            { label: 'Reduction phase', threshold: 200, description: 'Focus on categories and batching decisions.' },
+            { label: 'Refinement', threshold: 100, description: 'Curate for joy, utility, and essentials.' },
+            { label: 'Optimization', threshold: 50, description: 'Maintain intentional choices and rituals.' }
+        ];
+
+        const currentItems = this.getCurrentItemCount();
+        timeline.innerHTML = stages.map((stage, index) => {
+            const isComplete = currentItems <= stage.threshold;
+            const isActive = !isComplete && (index === 0 || currentItems <= stages[index - 1].threshold);
+            const statusClass = isComplete ? 'phase-step--complete' : isActive ? 'phase-step--active' : '';
+            return `
+                <div class="phase-step ${statusClass}">
+                    <div class="phase-step__badge">${stage.threshold}</div>
+                    <div class="phase-step__meta">
+                        <div class="phase-step__title">${stage.label}</div>
+                        <div class="phase-step__description">${stage.description}</div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
 
     updateMilestones() {
         const milestonesList = document.getElementById('milestonesList');
@@ -254,6 +309,80 @@ class MinimalismDashboard {
         if (daysElement) daysElement.textContent = daysOnJourney;
     }
 
+    updateSummaries() {
+        const weeklyList = document.getElementById('weeklySummaryList');
+        const monthlyList = document.getElementById('monthlySummaryList');
+
+        if (!weeklyList || !monthlyList) return;
+
+        const milestones = this.userProgress?.milestones;
+        if (!Array.isArray(milestones) || milestones.length < 2) {
+            weeklyList.innerHTML = '<li class="summary-list__empty">Log milestones to see weekly insights.</li>';
+            monthlyList.innerHTML = '<li class="summary-list__empty">Monthly summaries appear after multiple updates.</li>';
+            return;
+        }
+
+        const sorted = [...milestones].sort((a, b) => new Date(a.date) - new Date(b.date));
+        let previousCount = sorted[0].itemCount ?? this.userProfile?.currentItems ?? 0;
+
+        const weeklyMap = new Map();
+        const monthlyMap = new Map();
+
+        for (let i = 1; i < sorted.length; i++) {
+            const milestone = sorted[i];
+            const currentCount = milestone.itemCount ?? previousCount;
+            const reduction = Math.max(0, previousCount - currentCount);
+            previousCount = currentCount;
+
+            if (reduction <= 0) continue;
+
+            const milestoneDate = new Date(milestone.date || Date.now());
+            const weekStart = this.getWeekStart(milestoneDate);
+            const weekKey = weekStart.toISOString().slice(0, 10);
+            const weekEntry = weeklyMap.get(weekKey) || {
+                label: `Week of ${weekStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`,
+                total: 0,
+                entries: 0,
+                startDate: weekStart
+            };
+            weekEntry.total += reduction;
+            weekEntry.entries += 1;
+            weeklyMap.set(weekKey, weekEntry);
+
+            const monthKey = `${milestoneDate.getFullYear()}-${milestoneDate.getMonth()}`;
+            const monthEntry = monthlyMap.get(monthKey) || {
+                label: this.formatMonthLabel(milestoneDate),
+                total: 0,
+                entries: 0,
+                monthDate: new Date(milestoneDate.getFullYear(), milestoneDate.getMonth(), 1)
+            };
+            monthEntry.total += reduction;
+            monthEntry.entries += 1;
+            monthlyMap.set(monthKey, monthEntry);
+        }
+
+        const weeklyItems = Array.from(weeklyMap.values()).sort((a, b) => b.startDate - a.startDate);
+        const monthlyItems = Array.from(monthlyMap.values()).sort((a, b) => b.monthDate - a.monthDate);
+
+        weeklyList.innerHTML = weeklyItems.length
+            ? weeklyItems.slice(0, 5).reverse().map(entry => `
+                <li class="summary-list__item">
+                    <div class="summary-list__title">${entry.label}</div>
+                    <div class="summary-list__meta">Reduced ${entry.total} items across ${entry.entries} updates.</div>
+                </li>
+            `).join('')
+            : '<li class="summary-list__empty">No weekly changes yet.</li>';
+
+        monthlyList.innerHTML = monthlyItems.length
+            ? monthlyItems.slice(0, 6).reverse().map(entry => `
+                <li class="summary-list__item">
+                    <div class="summary-list__title">${entry.label}</div>
+                    <div class="summary-list__meta">${entry.total} items down • ${entry.entries} logged updates</div>
+                </li>
+            `).join('')
+            : '<li class="summary-list__empty">No monthly changes yet.</li>';
+    }
+
     getCurrentItemCount() {
         const metrics = this.computedProfile?.metrics;
         if (metrics && typeof metrics.currentItems === 'number') {
@@ -263,6 +392,88 @@ class MinimalismDashboard {
             return this.userProgress.milestones[this.userProgress.milestones.length - 1].itemCount;
         }
         return typeof this.userProfile?.currentItems === 'number' ? this.userProfile.currentItems : 0;
+    }
+
+    renderDecisionHistory() {
+        const container = document.getElementById('decisionLog');
+        if (!container) return;
+
+        if (!Array.isArray(this.decisionHistory) || this.decisionHistory.length === 0) {
+            container.innerHTML = '<p class="decision-log__empty">No decisions recorded yet. Log choices in the chat to build this archive.</p>';
+            return;
+        }
+
+        const latest = [...this.decisionHistory].slice(-8).reverse();
+        container.innerHTML = latest.map(entry => {
+            const reason = entry.reason || entry.notes || 'No reason captured';
+            const action = entry.action || entry.decision || 'Updated';
+            const item = entry.item || entry.title || 'Item';
+            const dateLabel = entry.date ? this.formatDate(entry.date) : 'Recently';
+            return `
+                <div class="decision-log__item">
+                    <div class="decision-log__meta">
+                        <span class="decision-log__title">${this.escapeHtml(item)}</span>
+                        <span class="decision-log__action">${this.escapeHtml(action)}</span>
+                    </div>
+                    <div class="decision-log__reason">${this.escapeHtml(reason)}</div>
+                    <div class="decision-log__date">${dateLabel}</div>
+                </div>
+            `;
+        }).join('');
+    }
+
+    renderSuccessStories() {
+        const container = document.getElementById('successStoriesList');
+        if (!container) return;
+
+        if (!Array.isArray(this.successStories) || this.successStories.length === 0) {
+            container.innerHTML = '<p class="story-list__empty">Record a quick win to look back on later!</p>';
+            return;
+        }
+
+        container.innerHTML = this.successStories.slice(-6).reverse().map(story => `
+            <article class="story-card">
+                <header class="story-card__header">
+                    <h4>${this.escapeHtml(story.title)}</h4>
+                    <time>${this.formatDate(story.date)}</time>
+                </header>
+                <p>${this.escapeHtml(story.text)}</p>
+            </article>
+        `).join('');
+    }
+
+    addSuccessStory() {
+        const titleInput = document.getElementById('successStoryTitle');
+        const textInput = document.getElementById('successStoryText');
+        if (!titleInput || !textInput) return;
+
+        const title = titleInput.value.trim();
+        const text = textInput.value.trim();
+
+        if (!title || !text) {
+            this.showNotification('Share a title and a short story before saving.', 'warning');
+            return;
+        }
+
+        const story = {
+            id: Date.now().toString(36),
+            title,
+            text,
+            date: new Date().toISOString()
+        };
+
+        this.successStories.push(story);
+        this.saveSuccessStories();
+        this.renderSuccessStories();
+
+        titleInput.value = '';
+        textInput.value = '';
+
+        this.showNotification('Success story saved! Celebrate your progress.', 'success');
+    }
+
+    saveSuccessStories() {
+        localStorage.setItem('minimalism_success_stories', JSON.stringify(this.successStories));
     }
 
     getAvatarInitials() {
@@ -285,6 +496,28 @@ class MinimalismDashboard {
             'flexible': 'Flexible'
         };
         return map[timeframe] || 'Flexible';
+    }
+
+    getWeekStart(date) {
+        const start = new Date(date);
+        const day = start.getDay();
+        start.setHours(0, 0, 0, 0);
+        start.setDate(start.getDate() - day);
+        return start;
+    }
+
+    formatMonthLabel(date) {
+        const formatter = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' });
+        return formatter.format(date instanceof Date ? date : new Date(date));
+    }
+
+    escapeHtml(value) {
+        return String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     initializeCategories() {
@@ -361,34 +594,49 @@ class MinimalismDashboard {
     }
 
     setNewGoal() {
-        const goalInput = document.getElementById('goalInput');
-        const targetCount = parseInt(goalInput.value);
-        
+        const targetInput = document.getElementById('goalTargetInput');
+        const noteInput = document.getElementById('goalNoteInput');
+        const dateInput = document.getElementById('goalTargetDate');
+
+        if (!targetInput) return;
+
+        const targetCount = parseInt(targetInput.value, 10);
+        const currentItems = this.getCurrentItemCount();
+
         if (!targetCount || targetCount <= 0) {
             this.showNotification('Please enter a valid item count', 'warning');
             return;
         }
 
-        const currentItems = this.getCurrentItemCount();
-        
         if (targetCount >= currentItems) {
             this.showNotification('Goal should be less than your current item count', 'warning');
             return;
         }
 
+        const now = new Date();
+        const providedDate = dateInput?.value ? new Date(dateInput.value) : null;
+        const targetDate = providedDate && !Number.isNaN(providedDate.getTime())
+            ? providedDate.toISOString()
+            : this.calculateTargetDate(currentItems, targetCount);
+
         const goal = {
-            id: Date.now(),
-            targetCount: targetCount,
-            currentCount: currentItems,
-            dateSet: new Date().toISOString(),
-            targetDate: this.calculateTargetDate(currentItems, targetCount),
+            id: Date.now().toString(36),
+            targetCount,
+            startingCount: currentItems,
+            note: noteInput?.value?.trim() || '',
+            dateSet: now.toISOString(),
+            targetDate,
             status: 'active'
         };
 
         this.goals.push(goal);
         this.saveGoals();
-        
-        goalInput.value = '';
+        this.renderGoals();
+
+        if (targetInput) targetInput.value = '';
+        if (dateInput) dateInput.value = '';
+        if (noteInput) noteInput.value = '';
+
         this.showNotification(`New goal set: Reduce to ${targetCount} items!`, 'success');
     }
 
@@ -398,6 +646,61 @@ class MinimalismDashboard {
         const targetDate = new Date();
         targetDate.setDate(targetDate.getDate() + estimatedDays);
         return targetDate.toISOString();
+    }
+
+    renderGoals() {
+        const list = document.getElementById('goalList');
+        if (!list) return;
+
+        if (!this.goals || this.goals.length === 0) {
+            list.innerHTML = '<li class="goal-list__empty">No active goals yet. Set a target to stay accountable.</li>';
+            return;
+        }
+
+        const currentItems = this.getCurrentItemCount();
+        list.innerHTML = this.goals
+            .sort((a, b) => new Date(a.targetDate) - new Date(b.targetDate))
+            .map(goal => {
+                const targetDateLabel = goal.targetDate ? this.formatDate(goal.targetDate) : 'No date';
+                const progress = Math.max(0, currentItems - goal.targetCount);
+                const total = Math.max(1, (goal.startingCount || currentItems) - goal.targetCount);
+                const percent = Math.min(100, Math.round((progress / total) * 100));
+                const statusClass = goal.status === 'complete' ? 'goal-list__item--complete' : '';
+                return `
+                    <li class="goal-list__item ${statusClass}">
+                        <div class="goal-list__meta">
+                            <div class="goal-list__title">Reach ${goal.targetCount} items</div>
+                            <div class="goal-list__subtitle">Target date: ${targetDateLabel}</div>
+                            ${goal.note ? `<div class="goal-list__note">${this.escapeHtml(goal.note)}</div>` : ''}
+                        </div>
+                        <div class="goal-list__progress">
+                            <div class="goal-progress-bar"><span style="width:${percent}%"></span></div>
+                            <span class="goal-progress-label">${percent}% complete</span>
+                        </div>
+                        <div class="goal-list__actions">
+                            <button type="button" class="btn btn-ghost" data-action="complete" data-goal="${goal.id}">${goal.status === 'complete' ? 'Completed' : 'Mark done'}</button>
+                            <button type="button" class="btn btn-ghost" data-action="delete" data-goal="${goal.id}">Remove</button>
+                        </div>
+                    </li>
+                `;
+            }).join('');
+    }
+
+    markGoalComplete(goalId) {
+        const goal = this.goals.find(g => g.id === goalId);
+        if (!goal) return;
+        goal.status = 'complete';
+        goal.completedAt = new Date().toISOString();
+        this.saveGoals();
+        this.renderGoals();
+        this.showNotification('Goal marked as complete! Great work.', 'success');
+    }
+
+    deleteGoal(goalId) {
+        this.goals = this.goals.filter(goal => goal.id !== goalId);
+        this.saveGoals();
+        this.renderGoals();
+        this.showNotification('Goal removed.', 'info');
     }
 
     showProgressModal() {
@@ -410,12 +713,13 @@ class MinimalismDashboard {
     }
 
     async addProgressEntry(itemCount) {
+        const previousCount = this.getCurrentItemCount();
         const milestone = {
             itemCount: itemCount,
             date: new Date().toISOString(),
             milestone: `Updated to ${itemCount} items`,
             notes: prompt('Add notes about this progress (optional):') || '',
-            improvement: this.getCurrentItemCount() - itemCount
+            improvement: previousCount - itemCount
         };
 
         // Update local progress
@@ -464,25 +768,43 @@ class MinimalismDashboard {
 
         // Refresh dashboard
         this.updateAllVisuals();
-        this.checkForMilestones(itemCount);
+        this.checkForMilestones(previousCount, itemCount);
     }
 
-    checkForMilestones(newItemCount) {
+    checkForMilestones(previousCount, newItemCount) {
         const milestones = [500, 300, 200, 150, 100, 75, 50];
-        const currentItems = this.getCurrentItemCount();
         
         milestones.forEach(milestone => {
-            if (newItemCount <= milestone && currentItems > milestone) {
+            if (previousCount > milestone && newItemCount <= milestone) {
                 this.celebrateMilestone(milestone);
             }
         });
     }
 
     celebrateMilestone(milestone) {
-        // Show celebration animation
-        setTimeout(() => {
-            this.showNotification(`Milestone achieved: ${milestone} items`, 'success');
-        }, 1000);
+        this.showNotification(`Milestone achieved: ${milestone} items`, 'success');
+        this.showDashboardCelebration(`Amazing progress! You've reached ${milestone} items.`);
+    }
+
+    showDashboardCelebration(message) {
+        const overlay = document.getElementById('dashboardCelebration');
+        const messageEl = document.getElementById('dashboardCelebrationMessage');
+        if (!overlay || !messageEl) return;
+
+        messageEl.textContent = message;
+        overlay.removeAttribute('hidden');
+        overlay.classList.add('celebration--visible');
+
+        clearTimeout(this._celebrationTimeout);
+        this._celebrationTimeout = setTimeout(() => this.hideDashboardCelebration(), 6000);
+    }
+
+    hideDashboardCelebration() {
+        const overlay = document.getElementById('dashboardCelebration');
+        if (!overlay) return;
+        overlay.classList.remove('celebration--visible');
+        overlay.setAttribute('hidden', '');
+        clearTimeout(this._celebrationTimeout);
     }
 
     exportProgressData() {
@@ -491,6 +813,7 @@ class MinimalismDashboard {
             progress: this.userProgress,
             goals: this.goals,
             decisions: this.decisionHistory,
+            stories: this.successStories,
             exportDate: new Date().toISOString()
         };
 
@@ -607,3 +930,9 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // (Removed) Inline CSS injection; styles are centralized in minimal-design.css
+
+window.closeDashboardCelebration = function () {
+    if (window.dashboardApp) {
+        window.dashboardApp.hideDashboardCelebration();
+    }
+};
