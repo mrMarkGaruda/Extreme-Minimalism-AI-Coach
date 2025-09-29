@@ -352,6 +352,45 @@
         return state.vault;
     };
 
+    const deleteConversationHistory = async () => {
+        if (!state.user) {
+            throw new Error('User not authenticated.');
+        }
+        const response = await apiFetch('/api/account/conversations', { method: 'DELETE' });
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data?.error || 'Failed to delete conversations.');
+        }
+        if (state.vault) {
+            state.vault.conversationHistory = [];
+            dispatch('vault:updated', { vault: deepClone(state.vault) });
+        }
+        return true;
+    };
+
+    const deleteAccount = async (password) => {
+        if (!state.user) {
+            throw new Error('User not authenticated.');
+        }
+        const response = await apiFetch('/api/account', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data?.error || 'Unable to delete account.');
+        }
+
+        setToken(null);
+        state.user = null;
+        state.vault = null;
+        state.ready = false;
+        showOverlay('Your account has been deleted. You can create a new one any time.');
+        dispatch('auth:changed', { user: null });
+        return data;
+    };
+
     const logout = async () => {
         try {
             await apiFetch('/api/logout', { method: 'POST' });
@@ -390,6 +429,8 @@
         getVault: () => deepClone(state.vault),
         updateVault,
         syncVault,
+        deleteConversationHistory,
+        deleteAccount,
         apiFetch,
         refreshAccount
     };

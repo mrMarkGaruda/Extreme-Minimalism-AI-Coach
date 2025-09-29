@@ -86,6 +86,17 @@ async function writeUsersToDisk(users) {
     await fs.writeFile(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
 }
 
+async function removeUserById(userId) {
+    const users = await readUsersFromDisk();
+    const index = users.findIndex(user => user.id === userId);
+    if (index === -1) {
+        return null;
+    }
+    const [removed] = users.splice(index, 1);
+    await writeUsersToDisk(users);
+    return removed;
+}
+
 function sanitizeUser(user) {
     if (!user) return null;
     const { passwordHash, encryptionSalt, ...safe } = user;
@@ -205,6 +216,17 @@ async function readUserVault(userId) {
 async function writeUserVault(userId, payload) {
     const filePath = path.join(USER_VAULT_DIR, `${userId}.json`);
     await fs.writeFile(filePath, JSON.stringify(payload, null, 2), 'utf8');
+}
+
+async function deleteUserVaultFile(userId) {
+    const filePath = path.join(USER_VAULT_DIR, `${userId}.json`);
+    try {
+        await fs.unlink(filePath);
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            throw error;
+        }
+    }
 }
 
 async function loadVault(userId, key) {
@@ -964,6 +986,65 @@ app.post('/api/account/export', authenticateRequest, async (req, res) => {
         console.error('[Account] Export failed:', error);
         const status = error.message?.includes('encryption key') ? 401 : 500;
         res.status(status).json({ error: status === 401 ? 'Re-authentication required.' : 'Unable to export data.' });
+    }
+});
+
+app.delete('/api/account/conversations', authenticateRequest, async (req, res) => {
+    try {
+        const { vault, key } = await loadVaultForRequest(req);
+        vault.conversationHistory = [];
+        await saveVaultForUser(req.user.id, key, vault);
+        if (vault.progress) {
+            userProgress.set(req.user.id, vault.progress);
+        } else {
+            userProgress.delete(req.user.id);
+        }
+        userSessions.delete(req.user.id);
+        res.json({ success: true });
+    } catch (error) {
+        console.error('[Account] Conversation deletion failed:', error);
+        const status = error.message?.includes('encryption key') ? 401 : 500;
+        res.status(status).json({ error: status === 401 ? 'Re-authentication required.' : 'Unable to delete conversations.' });
+    }
+});
+
+app.delete('/api/account', authenticateRequest, async (req, res) => {
+    try {
+        const { password } = req.body || {};
+        if (typeof password !== 'string' || password.length < 8) {
+            return res.status(400).json({ error: 'Password confirmation is required.' });
+        }
+
+        const user = await findUserById(req.user.id);
+        if (!user) {
+            return res.status(404).json({ error: 'Account not found.' });
+        }
+
+        const passwordMatches = await bcrypt.compare(password, user.passwordHash);
+        if (!passwordMatches) {
+            return res.status(401).json({ error: 'Invalid credentials.' });
+        }
+
+        await deleteUserVaultFile(req.user.id);
+        await removeUserById(req.user.id);
+        userProfiles.delete(req.user.id);
+        userProgress.delete(req.user.id);
+        userSessions.delete(req.user.id);
+        revokeToken(req.token || getAuthToken(req));
+
+        if (req.session) {
+            req.session.userId = undefined;
+            req.session.jwt = undefined;
+            req.session.userRole = undefined;
+            req.session.encryptionKey = undefined;
+            req.session.destroy(() => {});
+        }
+
+        res.json({ success: true, message: 'Account deleted successfully.' });
+    } catch (error) {
+        console.error('[Account] Account deletion failed:', error);
+        const status = error.message?.includes('encryption key') ? 401 : 500;
+        res.status(status).json({ error: status === 401 ? 'Re-authentication required.' : 'Unable to delete account.' });
     }
 });
 
